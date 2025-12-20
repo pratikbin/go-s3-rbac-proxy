@@ -26,6 +26,7 @@ const (
 	streamingPayload        = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
 	iso8601BasicFormat      = "20060102T150405Z"
 	iso8601BasicFormatShort = "20060102"
+	maxClockSkew            = 15 * time.Minute // AWS SigV4 clock skew tolerance
 )
 
 // PERFORMANCE: Pre-computed hex encoding table for URI encoding optimization
@@ -135,7 +136,7 @@ func (a *AuthMiddleware) ValidateRequest(r *http.Request) (*User, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid x-amz-date format")
 	}
-	if time.Since(requestTime).Abs() > 15*time.Minute {
+	if time.Since(requestTime).Abs() > maxClockSkew {
 		return nil, fmt.Errorf("request timestamp too skewed")
 	}
 
@@ -237,6 +238,24 @@ func (a *AuthMiddleware) validatePresignedURL(r *http.Request) (*User, error) {
 	requestTime, err := time.Parse(iso8601BasicFormat, date)
 	if err != nil {
 		return nil, fmt.Errorf("invalid x-amz-date format")
+	}
+
+	// SECURITY: Validate clock skew on X-Amz-Date (defense in depth)
+	// Even if the presigned URL claims to be valid for 7 days, the request timestamp
+	// itself must be within ±15 minutes of server time to prevent:
+	// 1. Replay attacks with old presigned URLs
+	// 2. Abuse of long-lived URLs with severely out-of-sync clocks
+	// 3. Use of URLs created far in the past
+	now := time.Now().UTC()
+	timeDelta := now.Sub(requestTime)
+	if timeDelta < -maxClockSkew || timeDelta > maxClockSkew {
+		Logger.Warn("presigned URL timestamp outside acceptable clock skew",
+			zap.String("access_key", accessKey),
+			zap.Time("request_time", requestTime),
+			zap.Time("server_time", now),
+			zap.Duration("clock_skew", timeDelta),
+			zap.Duration("max_allowed_skew", maxClockSkew))
+		return nil, fmt.Errorf("request timestamp outside acceptable time window (±15 minutes)")
 	}
 
 	// Parse expires (duration in seconds)
