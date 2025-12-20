@@ -40,7 +40,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
 		os.Exit(1)
 	}
-	defer Logger.Sync()
+	defer func() {
+		// Ignore sync errors on shutdown (common on some platforms)
+		// Error is typically "sync /dev/stderr: invalid argument" on some systems
+		_ = Logger.Sync()
+	}()
 
 	Logger.Info("configuration loaded",
 		zap.String("listen_addr", config.Server.ListenAddr),
@@ -92,4 +96,3 @@ func main() {
 
 	Logger.Info("server stopped")
 }
-
