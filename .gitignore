@@ -35,3 +35,15 @@ Thumbs.db
 
 config.yaml
 todo.md
+node_modules
+tempfiles/backup~old.bak
+tempfiles/data@2024.dat
+tempfiles/data&more,info.csv
+tempfiles/file_name-test.txt
+tempfiles/important!.txt
+tempfiles/large file (big).bin
+tempfiles/my file (1).txt
+tempfiles/test \[file] 2.bin
+tempfiles/test\[2024]@v1.0_final.tar.gz
+tempfiles/subdir/data@nested.bin
+tempfiles/subdir/nested (file).txt

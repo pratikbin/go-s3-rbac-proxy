@@ -3,7 +3,7 @@ master_credentials:
   access_key: "LH8QTI0PA41FT89TFI5V"
   secret_key: "LvraGG7GVNlrO1O937GpnSEH0NmlHbcmNeKI9i0P"
   endpoint: "https://fsn1.your-objectstorage.com"
-  region: "us-east-1"  # Hetzner usually uses us-east-1
+  region: "fsn1"  # MUST match what mc is configured with (check: mc admin info nodeops-registry)
 
 # Proxy server configuration
 server:
@@ -32,5 +32,5 @@ users:
 
 # Logging configuration
 logging:
-  level: "info"  # debug, info, warn, error
+  level: "debug"  # debug, info, warn, error
   format: "json"  # json or console

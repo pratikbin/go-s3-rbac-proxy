@@ -12,4 +12,3 @@ require (
 	github.com/aws/smithy-go v1.24.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 )
-
