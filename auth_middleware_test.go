@@ -246,21 +246,21 @@ func TestPresignedURLExpiry(t *testing.T) {
 	tests := []struct {
 		name          string
 		expiresOffset time.Duration // Offset from now to set as request time
-		expiresValue  string         // X-Amz-Expires value
+		expiresValue  string        // X-Amz-Expires value
 		expectError   bool
 		errorContains string
 	}{
 		{
 			name:          "valid_expiry_passes_expiry_check",
 			expiresOffset: -30 * time.Second, // URL created 30 seconds ago
-			expiresValue:  "3600",             // Valid for 1 hour
-			expectError:   true,               // Will fail on signature, but passed expiry check
-			errorContains: "signature",        // Should fail on signature, not expiry
+			expiresValue:  "3600",            // Valid for 1 hour
+			expectError:   true,              // Will fail on signature, but passed expiry check
+			errorContains: "signature",       // Should fail on signature, not expiry
 		},
 		{
 			name:          "expired_presigned_url",
-			expiresOffset: -3700 * time.Second, // URL created over 1 hour ago
-			expiresValue:  "3600",              // Valid for 1 hour
+			expiresOffset: -8 * time.Minute, // URL created 8 minutes ago (within 15min clock skew)
+			expiresValue:  "300",            // Valid for 5 minutes (expired 3 minutes ago)
 			expectError:   true,
 			errorContains: "expired",
 		},
@@ -302,9 +302,9 @@ func TestPresignedURLExpiry(t *testing.T) {
 		{
 			name:          "max_valid_expires",
 			expiresOffset: -30 * time.Second,
-			expiresValue:  "604800",      // Exactly 7 days (max allowed)
-			expectError:   true,          // Will fail on signature, but passed expiry check
-			errorContains: "signature",   // Should fail on signature, not expiry
+			expiresValue:  "604800",    // Exactly 7 days (max allowed)
+			expectError:   true,        // Will fail on signature, but passed expiry check
+			errorContains: "signature", // Should fail on signature, not expiry
 		},
 	}
 

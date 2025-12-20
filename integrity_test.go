@@ -84,6 +84,7 @@ func TestContentIntegrityVerification_Enabled_ValidHash(t *testing.T) {
 	}
 	securityConfig := SecurityConfig{
 		VerifyContentIntegrity: true, // Enabled for security
+		MaxVerifyBodySize:      50 * 1024 * 1024, // 50MB
 	}
 	proxy := NewProxyHandler(auth, masterCreds, securityConfig)
 
@@ -139,6 +140,7 @@ func TestContentIntegrityVerification_Enabled_InvalidHash(t *testing.T) {
 	}
 	securityConfig := SecurityConfig{
 		VerifyContentIntegrity: true, // Enabled for security
+		MaxVerifyBodySize:      50 * 1024 * 1024, // 50MB
 	}
 	proxy := NewProxyHandler(auth, masterCreds, securityConfig)
 
@@ -188,6 +190,7 @@ func TestContentIntegrityVerification_SkipsStreamingUploads(t *testing.T) {
 	}
 	securityConfig := SecurityConfig{
 		VerifyContentIntegrity: true, // Enabled for security
+		MaxVerifyBodySize:      50 * 1024 * 1024, // 50MB
 	}
 	proxy := NewProxyHandler(auth, masterCreds, securityConfig)
 
@@ -230,6 +233,7 @@ func TestContentIntegrityVerification_SkipsUnsignedPayload(t *testing.T) {
 	}
 	securityConfig := SecurityConfig{
 		VerifyContentIntegrity: true, // Enabled for security
+		MaxVerifyBodySize:      50 * 1024 * 1024, // 50MB
 	}
 	proxy := NewProxyHandler(auth, masterCreds, securityConfig)
 
@@ -271,6 +275,7 @@ func TestContentIntegrityVerification_SkipsEmptyBody(t *testing.T) {
 	}
 	securityConfig := SecurityConfig{
 		VerifyContentIntegrity: true, // Enabled for security
+		MaxVerifyBodySize:      50 * 1024 * 1024, // 50MB
 	}
 	proxy := NewProxyHandler(auth, masterCreds, securityConfig)
 
@@ -308,6 +313,7 @@ func TestContentIntegrityVerification_CaseInsensitiveHash(t *testing.T) {
 	}
 	securityConfig := SecurityConfig{
 		VerifyContentIntegrity: true, // Enabled for security
+		MaxVerifyBodySize:      50 * 1024 * 1024, // 50MB
 	}
 	proxy := NewProxyHandler(auth, masterCreds, securityConfig)
 
