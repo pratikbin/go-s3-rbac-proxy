@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -17,11 +18,17 @@ const (
 )
 
 // BackendSigner signs backend requests with master credentials using AWS SigV4
+// PERFORMANCE: Caches signing key per day to avoid repeated HMAC calculations
 type BackendSigner struct {
 	accessKey string
 	secretKey string
 	region    string
 	service   string
+
+	// Signing key cache (saves 4 HMAC operations per request)
+	mu              sync.RWMutex
+	cachedDateStamp string
+	cachedSigningKey []byte
 }
 
 // NewBackendSigner creates a new backend signer
@@ -111,14 +118,14 @@ func (s *BackendSigner) SignRequest(req *http.Request, payloadHash string, times
 
 	req.Header.Set("Authorization", authHeader)
 
-	// Debug logging
+	// Debug logging (SECURITY: Never log signatures or credentials)
 	if Logger.Core().Enabled(zap.DebugLevel) {
 		Logger.Debug("backend request signed",
 			zap.String("method", method),
 			zap.String("canonical_uri", canonicalURI),
 			zap.String("canonical_query", canonicalQuery),
 			zap.String("payload_hash", payloadHash),
-			zap.String("signature", signature[:16]+"..."),
+			// NOTE: Signature omitted for security - never log auth credentials
 		)
 	}
 
@@ -126,6 +133,7 @@ func (s *BackendSigner) SignRequest(req *http.Request, payloadHash string, times
 }
 
 // calculateSignature calculates the SigV4 signature for backend requests
+// PERFORMANCE: Caches the signing key per day to save 4 HMAC calculations per request
 func (s *BackendSigner) calculateSignature(dateStamp, stringToSign string) string {
 	// Signing Key Derivation:
 	// kSecret = AWS4 + SecretKey
@@ -135,12 +143,40 @@ func (s *BackendSigner) calculateSignature(dateStamp, stringToSign string) strin
 	// kSigning = HMAC(kService, "aws4_request")
 	// signature = Hex(HMAC(kSigning, StringToSign))
 
+	// Try to get cached signing key (read lock)
+	s.mu.RLock()
+	if s.cachedDateStamp == dateStamp && s.cachedSigningKey != nil {
+		kSigning := s.cachedSigningKey
+		s.mu.RUnlock()
+		// Fast path: Use cached signing key
+		signature := hmacSHA256(kSigning, []byte(stringToSign))
+		return hex.EncodeToString(signature)
+	}
+	s.mu.RUnlock()
+
+	// Slow path: Derive signing key (write lock)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Double-check after acquiring write lock (another goroutine might have cached it)
+	if s.cachedDateStamp == dateStamp && s.cachedSigningKey != nil {
+		kSigning := s.cachedSigningKey
+		signature := hmacSHA256(kSigning, []byte(stringToSign))
+		return hex.EncodeToString(signature)
+	}
+
+	// Derive the signing key (4 HMAC operations)
 	kSecret := []byte("AWS4" + s.secretKey)
 	kDate := hmacSHA256(kSecret, []byte(dateStamp))
 	kRegion := hmacSHA256(kDate, []byte(s.region))
 	kService := hmacSHA256(kRegion, []byte(s.service))
 	kSigning := hmacSHA256(kService, []byte("aws4_request"))
 
+	// Cache the signing key for this date
+	s.cachedDateStamp = dateStamp
+	s.cachedSigningKey = kSigning
+
+	// Calculate signature
 	signature := hmacSHA256(kSigning, []byte(stringToSign))
 	return hex.EncodeToString(signature)
 }
