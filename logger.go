@@ -2,7 +2,6 @@ package main
 
 import (
 	"go.uber.org/zap"
-	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
@@ -70,4 +69,3 @@ func InitLogger(level string, format string) error {
 
 	return nil
 }
-

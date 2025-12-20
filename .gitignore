@@ -33,3 +33,5 @@ config.local.yaml
 .DS_Store
 Thumbs.db
 
+config.yaml
+todo.md

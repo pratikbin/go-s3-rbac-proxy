@@ -20,13 +20,15 @@ import (
 type ProxyHandler struct {
 	authMiddleware *AuthMiddleware
 	masterCreds    MasterCredentials
+	backendURL     *url.URL        // Parsed once, reused for every request
+	awsCreds       aws.Credentials // Cached credentials
 	proxy          *httputil.ReverseProxy
 	signer         *v4.Signer
 }
 
 // NewProxyHandler creates a new proxy handler
 func NewProxyHandler(authMiddleware *AuthMiddleware, masterCreds MasterCredentials) *ProxyHandler {
-	// Parse backend URL
+	// Parse backend URL once during initialization
 	backendURL, err := url.Parse(masterCreds.Endpoint)
 	if err != nil {
 		panic(fmt.Sprintf("invalid backend endpoint: %v", err))
@@ -35,7 +37,12 @@ func NewProxyHandler(authMiddleware *AuthMiddleware, masterCreds MasterCredentia
 	handler := &ProxyHandler{
 		authMiddleware: authMiddleware,
 		masterCreds:    masterCreds,
-		signer:         v4.NewSigner(),
+		backendURL:     backendURL,
+		awsCreds: aws.Credentials{
+			AccessKeyID:     masterCreds.AccessKey,
+			SecretAccessKey: masterCreds.SecretKey,
+		},
+		signer: v4.NewSigner(),
 	}
 
 	// Create reverse proxy with custom transport
@@ -45,8 +52,6 @@ func NewProxyHandler(authMiddleware *AuthMiddleware, masterCreds MasterCredentia
 		ModifyResponse: handler.modifyResponse,
 		ErrorHandler:   handler.errorHandler,
 	}
-
-	_ = backendURL // We'll use this in director
 
 	return handler
 }
@@ -112,16 +117,16 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // director modifies the request before sending to backend
 func (p *ProxyHandler) director(req *http.Request) {
-	// Parse backend URL
-	backendURL, _ := url.Parse(p.masterCreds.Endpoint)
+	// Store original host for logging (only in debug mode)
+	var originalHost string
+	if Logger.Core().Enabled(zap.DebugLevel) {
+		originalHost = req.Host
+	}
 
-	// Store original host for logging
-	originalHost := req.Host
-
-	// Rewrite request to backend
-	req.URL.Scheme = backendURL.Scheme
-	req.URL.Host = backendURL.Host
-	req.Host = backendURL.Host
+	// Rewrite request to backend (using pre-parsed URL)
+	req.URL.Scheme = p.backendURL.Scheme
+	req.URL.Host = p.backendURL.Host
+	req.Host = p.backendURL.Host
 
 	// Remove client's authorization headers
 	req.Header.Del("Authorization")
@@ -132,32 +137,22 @@ func (p *ProxyHandler) director(req *http.Request) {
 	// Set unsigned payload for streaming
 	req.Header.Set("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD")
 
-	// Sign the request with master credentials
-	// Create AWS credentials
-	creds := aws.Credentials{
-		AccessKeyID:     p.masterCreds.AccessKey,
-		SecretAccessKey: p.masterCreds.SecretKey,
-	}
-
-	// Sign request
+	// Sign the request with master credentials (using cached credentials)
 	// Note: We use UNSIGNED-PAYLOAD to avoid reading the body
-	payloadHash := "UNSIGNED-PAYLOAD"
-
-	// Create signing time
-	signingTime := time.Now()
-
-	// Sign the request
-	err := p.signer.SignHTTP(req.Context(), creds, req, payloadHash, "s3", p.masterCreds.Region, signingTime)
+	err := p.signer.SignHTTP(req.Context(), p.awsCreds, req, "UNSIGNED-PAYLOAD", "s3", p.masterCreds.Region, time.Now())
 	if err != nil {
 		Logger.Error("failed to sign request", zap.Error(err))
 		return
 	}
 
-	Logger.Debug("request signed and forwarded",
-		zap.String("original_host", originalHost),
-		zap.String("backend_host", req.Host),
-		zap.String("path", req.URL.Path),
-	)
+	// Only log in debug mode to reduce overhead
+	if Logger.Core().Enabled(zap.DebugLevel) {
+		Logger.Debug("request signed and forwarded",
+			zap.String("original_host", originalHost),
+			zap.String("backend_host", req.Host),
+			zap.String("path", req.URL.Path),
+		)
+	}
 }
 
 // createTransport creates a high-performance HTTP transport
@@ -237,4 +232,3 @@ func (p *ProxyHandler) writeS3Error(w http.ResponseWriter, code, message string,
 func generateRequestID() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
-
