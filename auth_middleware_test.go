@@ -3,9 +3,19 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestMain(m *testing.M) {
+	// Initialize logger for tests (use console format for easier reading)
+	if err := InitLogger("debug", "console"); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
 
 func TestAuthMiddleware_ValidateRequest(t *testing.T) {
 	// Create test user
@@ -216,6 +226,112 @@ func TestTimestampValidation(t *testing.T) {
 
 			if valid != tt.expectValid {
 				t.Errorf("expected validity %v but got %v for skew %v", tt.expectValid, valid, skew)
+			}
+		})
+	}
+}
+
+func TestPresignedURLExpiry(t *testing.T) {
+	// Create test user
+	users := []User{
+		{
+			AccessKey:      "test-access-key",
+			SecretKey:      "test-secret-key",
+			AllowedBuckets: []string{"test-bucket"},
+		},
+	}
+	store := NewIdentityStore(users)
+	auth := NewAuthMiddleware(store)
+
+	tests := []struct {
+		name          string
+		expiresOffset time.Duration // Offset from now to set as request time
+		expiresValue  string         // X-Amz-Expires value
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name:          "valid_expiry_passes_expiry_check",
+			expiresOffset: -30 * time.Second, // URL created 30 seconds ago
+			expiresValue:  "3600",             // Valid for 1 hour
+			expectError:   true,               // Will fail on signature, but passed expiry check
+			errorContains: "signature",        // Should fail on signature, not expiry
+		},
+		{
+			name:          "expired_presigned_url",
+			expiresOffset: -3700 * time.Second, // URL created over 1 hour ago
+			expiresValue:  "3600",              // Valid for 1 hour
+			expectError:   true,
+			errorContains: "expired",
+		},
+		{
+			name:          "just_expired",
+			expiresOffset: -61 * time.Second, // URL created 61 seconds ago
+			expiresValue:  "60",              // Valid for 1 minute
+			expectError:   true,
+			errorContains: "expired",
+		},
+		{
+			name:          "expires_too_long",
+			expiresOffset: -30 * time.Second,
+			expiresValue:  "700000", // > 7 days (604800 seconds)
+			expectError:   true,
+			errorContains: "must be between 1 and 604800 seconds",
+		},
+		{
+			name:          "expires_zero",
+			expiresOffset: -30 * time.Second,
+			expiresValue:  "0",
+			expectError:   true,
+			errorContains: "must be between 1 and 604800 seconds",
+		},
+		{
+			name:          "expires_negative",
+			expiresOffset: -30 * time.Second,
+			expiresValue:  "-100",
+			expectError:   true,
+			errorContains: "must be between 1 and 604800 seconds",
+		},
+		{
+			name:          "expires_invalid_format",
+			expiresOffset: -30 * time.Second,
+			expiresValue:  "not-a-number",
+			expectError:   true,
+			errorContains: "invalid x-amz-expires format",
+		},
+		{
+			name:          "max_valid_expires",
+			expiresOffset: -30 * time.Second,
+			expiresValue:  "604800",      // Exactly 7 days (max allowed)
+			expectError:   true,          // Will fail on signature, but passed expiry check
+			errorContains: "signature",   // Should fail on signature, not expiry
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create request time
+			requestTime := time.Now().UTC().Add(tt.expiresOffset)
+			amzDate := requestTime.Format("20060102T150405Z")
+
+			// Build presigned URL with query parameters
+			req := httptest.NewRequest("GET", "/test-bucket/test-object?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=test-access-key/20240101/us-east-1/s3/aws4_request&X-Amz-Date="+amzDate+"&X-Amz-Expires="+tt.expiresValue+"&X-Amz-SignedHeaders=host&X-Amz-Signature=dummy", nil)
+			req.Host = "localhost:8080"
+
+			_, err := auth.validatePresignedURL(req)
+
+			if tt.expectError && err == nil {
+				t.Errorf("expected error but got none")
+			}
+
+			if !tt.expectError && err != nil {
+				t.Errorf("expected no error but got: %v", err)
+			}
+
+			if tt.expectError && err != nil && tt.errorContains != "" {
+				if !strings.Contains(err.Error(), tt.errorContains) {
+					t.Errorf("expected error to contain '%s' but got: %v", tt.errorContains, err)
+				}
 			}
 		})
 	}
