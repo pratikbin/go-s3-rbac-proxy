@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -24,6 +25,24 @@ const (
 	iso8601BasicFormat      = "20060102T150405Z"
 	iso8601BasicFormatShort = "20060102"
 )
+
+// Buffer pool for reducing allocations in signature validation
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
+
+// getBuffer gets a buffer from the pool
+func getBuffer() *bytes.Buffer {
+	return bufferPool.Get().(*bytes.Buffer)
+}
+
+// putBuffer returns a buffer to the pool after resetting it
+func putBuffer(buf *bytes.Buffer) {
+	buf.Reset()
+	bufferPool.Put(buf)
+}
 
 // AuthMiddleware validates incoming SigV4 requests
 type AuthMiddleware struct {
@@ -226,15 +245,23 @@ func buildCanonicalRequest(r *http.Request, signedHeadersStr string) string {
 		hashedPayload = unsignedPayload
 	}
 
-	// Combine into canonical request
-	return fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s",
-		method,
-		canonicalURI,
-		canonicalQuery,
-		canonicalHeaders,
-		signedHeadersStr,
-		hashedPayload,
-	)
+	// Combine into canonical request using buffer pool
+	buf := getBuffer()
+	defer putBuffer(buf)
+
+	buf.WriteString(method)
+	buf.WriteByte('\n')
+	buf.WriteString(canonicalURI)
+	buf.WriteByte('\n')
+	buf.WriteString(canonicalQuery)
+	buf.WriteByte('\n')
+	buf.WriteString(canonicalHeaders)
+	buf.WriteByte('\n')
+	buf.WriteString(signedHeadersStr)
+	buf.WriteByte('\n')
+	buf.WriteString(hashedPayload)
+
+	return buf.String()
 }
 
 // buildCanonicalRequestPresigned builds canonical request for presigned URLs
@@ -256,14 +283,42 @@ func buildCanonicalRequestPresigned(r *http.Request, signedHeadersStr string) st
 
 	hashedPayload := unsignedPayload
 
-	return fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s",
-		method,
-		canonicalURI,
-		canonicalQuery,
-		canonicalHeaders,
-		signedHeadersStr,
-		hashedPayload,
-	)
+	buf := getBuffer()
+	defer putBuffer(buf)
+
+	buf.WriteString(method)
+	buf.WriteByte('\n')
+	buf.WriteString(canonicalURI)
+	buf.WriteByte('\n')
+	buf.WriteString(canonicalQuery)
+	buf.WriteByte('\n')
+	buf.WriteString(canonicalHeaders)
+	buf.WriteByte('\n')
+	buf.WriteString(signedHeadersStr)
+	buf.WriteByte('\n')
+	buf.WriteString(hashedPayload)
+
+	return buf.String()
+}
+
+// uriEncode encodes a string according to RFC 3986 for AWS SigV4
+// It preserves: A-Z, a-z, 0-9, hyphen ( - ), underscore ( _ ), period ( . ), and tilde ( ~ )
+func uriEncode(s string) string {
+	buf := getBuffer()
+	defer putBuffer(buf)
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+			c == '-' || c == '_' || c == '.' || c == '~' {
+			buf.WriteByte(c)
+		} else {
+			buf.WriteByte('%')
+			buf.WriteByte("0123456789ABCDEF"[c>>4])
+			buf.WriteByte("0123456789ABCDEF"[c&15])
+		}
+	}
+	return buf.String()
 }
 
 // buildCanonicalQueryString builds the canonical query string
@@ -272,18 +327,18 @@ func buildCanonicalQueryString(query map[string][]string) string {
 		return ""
 	}
 
-	var keys []string
-	for k := range query {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
+	// Build list of encoded key=value pairs
 	var parts []string
-	for _, k := range keys {
-		for _, v := range query[k] {
-			parts = append(parts, fmt.Sprintf("%s=%s", k, v))
+	for k, values := range query {
+		encodedKey := uriEncode(k)
+		for _, v := range values {
+			encodedValue := uriEncode(v)
+			parts = append(parts, encodedKey+"="+encodedValue)
 		}
 	}
+
+	// Sort the encoded pairs
+	sort.Strings(parts)
 
 	return strings.Join(parts, "&")
 }
@@ -309,15 +364,17 @@ func buildCanonicalHeaders(r *http.Request, signedHeaders []string) string {
 	}
 	sort.Strings(keys)
 
-	var canonical bytes.Buffer
+	buf := getBuffer()
+	defer putBuffer(buf)
+
 	for _, k := range keys {
-		canonical.WriteString(k)
-		canonical.WriteString(":")
-		canonical.WriteString(strings.TrimSpace(headerMap[k]))
-		canonical.WriteString("\n")
+		buf.WriteString(k)
+		buf.WriteString(":")
+		buf.WriteString(strings.TrimSpace(headerMap[k]))
+		buf.WriteString("\n")
 	}
 
-	return canonical.String()
+	return buf.String()
 }
 
 // buildStringToSign builds the string to sign
@@ -328,16 +385,23 @@ func buildStringToSign(amzDate, dateStamp, region, service, canonicalRequest str
 	// CredentialScope + "\n" +
 	// HashedCanonicalRequest
 
-	algorithm := "AWS4-HMAC-SHA256"
-	credentialScope := fmt.Sprintf("%s/%s/%s/aws4_request", dateStamp, region, service)
+	buf := getBuffer()
+	defer putBuffer(buf)
+
 	hashedCanonicalRequest := hashSHA256([]byte(canonicalRequest))
 
-	return fmt.Sprintf("%s\n%s\n%s\n%s",
-		algorithm,
-		amzDate,
-		credentialScope,
-		hashedCanonicalRequest,
-	)
+	buf.WriteString("AWS4-HMAC-SHA256\n")
+	buf.WriteString(amzDate)
+	buf.WriteString("\n")
+	buf.WriteString(dateStamp)
+	buf.WriteByte('/')
+	buf.WriteString(region)
+	buf.WriteByte('/')
+	buf.WriteString(service)
+	buf.WriteString("/aws4_request\n")
+	buf.WriteString(hashedCanonicalRequest)
+
+	return buf.String()
 }
 
 // calculateSignature calculates the SigV4 signature
@@ -373,4 +437,3 @@ func hashSHA256(data []byte) string {
 	h.Write(data)
 	return hex.EncodeToString(h.Sum(nil))
 }
-
