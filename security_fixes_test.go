@@ -265,8 +265,10 @@ func TestPresignedURL_ExpiryEdgeCases(t *testing.T) {
 
 	// Use current time for realistic expiry testing
 	now := time.Now().UTC()
-	validDate := now.Add(-1 * time.Hour).Format(iso8601BasicFormat)
-	expiredDate := now.Add(-2 * time.Hour).Format(iso8601BasicFormat)
+	// IMPORTANT: Clock skew check happens BEFORE expiry check
+	// So dates must be within ±15 minutes for tests to reach expiry validation
+	validDate := now.Add(-5 * time.Minute).Format(iso8601BasicFormat)      // Within clock skew
+	expiredDate := now.Add(-10 * time.Minute).Format(iso8601BasicFormat)   // Within clock skew but will be expired
 
 	tests := []struct {
 		name         string
@@ -277,14 +279,14 @@ func TestPresignedURL_ExpiryEdgeCases(t *testing.T) {
 		{
 			name:         "valid_not_expired",
 			date:         validDate,
-			expires:      "7200", // 2 hours
-			shouldExpire: false,  // Should still have ~1 hour left
+			expires:      "3600", // 1 hour from 5 minutes ago = still valid
+			shouldExpire: false,
 		},
 		{
 			name:         "expired",
 			date:         expiredDate,
-			expires:      "3600", // 1 hour
-			shouldExpire: true,   // Expired 1 hour ago
+			expires:      "300", // 5 minutes from 10 minutes ago = expired 5 minutes ago
+			shouldExpire: true,
 		},
 		{
 			name:         "max_expiry",

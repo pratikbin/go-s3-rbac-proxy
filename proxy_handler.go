@@ -320,42 +320,69 @@ func (p *ProxyHandler) director(req *http.Request) {
 		!isStreamingUpload &&
 		req.Body != nil {
 
-		// Read and buffer the entire body to compute its hash
-		bodyBytes, err := io.ReadAll(req.Body)
-		if err != nil {
-			Logger.Error("failed to read body for integrity verification",
-				zap.Error(err),
-				zap.String("path", req.URL.Path))
-			return
-		}
-		req.Body.Close()
-
-		// Compute SHA256 of the actual body
-		hasher := sha256.New()
-		hasher.Write(bodyBytes)
-		computedHash := hex.EncodeToString(hasher.Sum(nil))
-
-		// Verify it matches the client's claim
-		if computedHash != strings.ToLower(originalContentSha256) {
-			Logger.Warn("content integrity verification failed - hash mismatch",
+		// SECURITY: Check body size to prevent OOM attacks
+		// If Content-Length exceeds max size, fall back to UNSIGNED-PAYLOAD
+		if req.ContentLength > p.securityConfig.MaxVerifyBodySize {
+			Logger.Warn("body too large for integrity verification - falling back to UNSIGNED-PAYLOAD",
 				zap.String("path", req.URL.Path),
-				zap.String("claimed_hash", originalContentSha256),
-				zap.String("computed_hash", computedHash),
+				zap.Int64("content_length", req.ContentLength),
+				zap.Int64("max_size", p.securityConfig.MaxVerifyBodySize))
+			payloadHash = unsignedPayload
+		} else if req.ContentLength < 0 {
+			// Content-Length unknown (chunked encoding) - skip verification
+			Logger.Debug("unknown content length - skipping integrity verification",
+				zap.String("path", req.URL.Path))
+			payloadHash = unsignedPayload
+		} else {
+			// Size is within limits - proceed with verification
+			// Read and buffer the entire body to compute its hash
+			bodyBytes, err := io.ReadAll(req.Body)
+			if err != nil {
+				Logger.Error("failed to read body for integrity verification",
+					zap.Error(err),
+					zap.String("path", req.URL.Path))
+				return
+			}
+			req.Body.Close()
+
+			// Double-check actual size (in case Content-Length was wrong)
+			if int64(len(bodyBytes)) > p.securityConfig.MaxVerifyBodySize {
+				Logger.Warn("actual body size exceeds limit - security violation detected",
+					zap.String("path", req.URL.Path),
+					zap.Int("actual_size", len(bodyBytes)),
+					zap.Int64("claimed_size", req.ContentLength),
+					zap.Int64("max_size", p.securityConfig.MaxVerifyBodySize))
+				// Don't forward - this could be an attack
+				return
+			}
+
+			// Compute SHA256 of the actual body
+			hasher := sha256.New()
+			hasher.Write(bodyBytes)
+			computedHash := hex.EncodeToString(hasher.Sum(nil))
+
+			// Verify it matches the client's claim
+			if computedHash != strings.ToLower(originalContentSha256) {
+				Logger.Warn("content integrity verification failed - hash mismatch",
+					zap.String("path", req.URL.Path),
+					zap.String("claimed_hash", originalContentSha256),
+					zap.String("computed_hash", computedHash),
+					zap.Int("body_size", len(bodyBytes)))
+				// Don't forward the request - this is a security violation
+				return
+			}
+
+			// Restore the body for backend forwarding
+			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+			// Use the verified hash when signing to backend
+			payloadHash = computedHash
+
+			Logger.Debug("content integrity verified",
+				zap.String("path", req.URL.Path),
+				zap.String("hash", computedHash),
 				zap.Int("body_size", len(bodyBytes)))
-			// Don't forward the request - this is a security violation
-			return
 		}
-
-		// Restore the body for backend forwarding
-		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-
-		// Use the verified hash when signing to backend
-		payloadHash = computedHash
-
-		Logger.Debug("content integrity verified",
-			zap.String("path", req.URL.Path),
-			zap.String("hash", computedHash),
-			zap.Int("body_size", len(bodyBytes)))
 	} else {
 		// Default: Use UNSIGNED-PAYLOAD for maximum streaming performance
 		// Rely on TLS for transport security (client→proxy→backend all encrypted)

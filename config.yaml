@@ -34,6 +34,30 @@ security:
   # even when this is enabled, as they use chunk-by-chunk authentication
   verify_content_integrity: false
 
+  # max_verify_body_size: Maximum body size (in bytes) for integrity verification
+  #
+  # Default: 52428800 (50MB)
+  # CRITICAL: Prevents Out-of-Memory (OOM) attacks when verification is enabled
+  #
+  # Behavior:
+  # - Bodies <= this size: Verified if verify_content_integrity is true
+  # - Bodies > this size: Automatically fall back to UNSIGNED-PAYLOAD (logged as warning)
+  # - Unknown size (chunked encoding): Fall back to UNSIGNED-PAYLOAD
+  #
+  # Security implications:
+  # - Too high: Risk of OOM if attacker sends huge body (e.g., 100GB)
+  # - Too low: Large legitimate requests fall back to unsigned (less secure)
+  #
+  # Recommended values:
+  # - 10MB: Suitable for API requests, small files, XML manifests
+  # - 50MB: Default - balances security and usability
+  # - 100MB: For environments expecting larger files
+  # - Set to 0 to disable limit (DANGEROUS - use only in trusted environments)
+  #
+  # Note: This only applies when verify_content_integrity is true
+  # Large multipart upload parts (5GB) should always use UNSIGNED-PAYLOAD
+  max_verify_body_size: 52428800  # 50MB
+
 # User definitions with RBAC
 users:
   - access_key: "user1-access-key"

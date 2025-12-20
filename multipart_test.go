@@ -115,7 +115,8 @@ func TestMultipartUploadComplete_WithContentHash(t *testing.T) {
 		Region:    "us-east-1",
 	}
 	securityConfig := SecurityConfig{
-		VerifyContentIntegrity: true, // Enable verification
+		VerifyContentIntegrity: true,            // Enable verification
+		MaxVerifyBodySize:      1 * 1024 * 1024, // 1MB (enough for XML)
 	}
 	proxy := NewProxyHandler(auth, masterCreds, securityConfig)
 

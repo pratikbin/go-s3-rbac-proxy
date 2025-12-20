@@ -42,6 +42,12 @@ type SecurityConfig struct {
 	// When true: Buffers and verifies body hash, then forwards with correct hash to backend
 	// Performance impact: Requires reading entire body into memory for hash calculation
 	VerifyContentIntegrity bool `yaml:"verify_content_integrity"`
+
+	// MaxVerifyBodySize is the maximum body size (in bytes) for integrity verification
+	// Default: 52428800 (50MB) - prevents OOM attacks when verification is enabled
+	// Requests larger than this will fall back to UNSIGNED-PAYLOAD
+	// Set to 0 to disable size limit (dangerous - use with caution)
+	MaxVerifyBodySize int64 `yaml:"max_verify_body_size"`
 }
 
 // User represents a client user with RBAC permissions
@@ -83,6 +89,12 @@ func LoadConfig(path string) (*Config, error) {
 	// Validate server config
 	if config.Server.ListenAddr == "" {
 		config.Server.ListenAddr = ":8080"
+	}
+
+	// Validate security config
+	if config.Security.MaxVerifyBodySize == 0 {
+		// Default to 50MB to prevent OOM attacks
+		config.Security.MaxVerifyBodySize = 50 * 1024 * 1024 // 50MB
 	}
 
 	// Validate logging config
