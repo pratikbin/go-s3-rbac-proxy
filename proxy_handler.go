@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -16,11 +20,12 @@ import (
 )
 
 // Context keys for storing user and bucket information
-type contextKey string
+// Using unexported int type prevents collisions with string-based keys from other packages
+type contextKey int
 
 const (
-	contextKeyUser   contextKey = "user"
-	contextKeyBucket contextKey = "bucket"
+	contextKeyUser contextKey = iota
+	contextKeyBucket
 )
 
 // PERFORMANCE: BufferPool implements httputil.BufferPool for zero-allocation buffer reuse
@@ -92,6 +97,7 @@ func (bp *BufferPool) Put(buf []byte) {
 type ProxyHandler struct {
 	authMiddleware *AuthMiddleware
 	masterCreds    MasterCredentials
+	securityConfig SecurityConfig
 	backendURL     *url.URL       // Parsed once, reused for every request
 	backendSigner  *BackendSigner // Custom SigV4 signer for backend requests
 	proxy          *httputil.ReverseProxy
@@ -101,7 +107,7 @@ type ProxyHandler struct {
 }
 
 // NewProxyHandler creates a new proxy handler with zero-allocation optimizations
-func NewProxyHandler(authMiddleware *AuthMiddleware, masterCreds MasterCredentials) *ProxyHandler {
+func NewProxyHandler(authMiddleware *AuthMiddleware, masterCreds MasterCredentials, securityConfig SecurityConfig) *ProxyHandler {
 	// Parse backend URL once during initialization
 	backendURL, err := url.Parse(masterCreds.Endpoint)
 	if err != nil {
@@ -121,6 +127,7 @@ func NewProxyHandler(authMiddleware *AuthMiddleware, masterCreds MasterCredentia
 	handler := &ProxyHandler{
 		authMiddleware: authMiddleware,
 		masterCreds:    masterCreds,
+		securityConfig: securityConfig,
 		backendURL:     backendURL,
 		backendSigner:  backendSigner,
 		bufferPool:     bufferPool,
@@ -303,25 +310,76 @@ func (p *ProxyHandler) director(req *http.Request) {
 	originalContentSha256 := req.Header.Get("X-Amz-Content-Sha256")
 	isStreamingUpload := strings.Contains(originalContentSha256, "STREAMING")
 
-	// 4. Remove ONLY client's authorization headers (leave Content-Length, Content-Type, etc.)
+	// 4. Integrity Verification (Optional - Performance vs Security Trade-off)
+	// When enabled, verifies that the body matches the client-provided X-Amz-Content-Sha256 hash
+	// This prevents tampering between client signature and proxy, at the cost of buffering the body
+	var payloadHash string
+	if p.securityConfig.VerifyContentIntegrity &&
+		originalContentSha256 != "" &&
+		originalContentSha256 != unsignedPayload &&
+		!isStreamingUpload &&
+		req.Body != nil {
+
+		// Read and buffer the entire body to compute its hash
+		bodyBytes, err := io.ReadAll(req.Body)
+		if err != nil {
+			Logger.Error("failed to read body for integrity verification",
+				zap.Error(err),
+				zap.String("path", req.URL.Path))
+			return
+		}
+		req.Body.Close()
+
+		// Compute SHA256 of the actual body
+		hasher := sha256.New()
+		hasher.Write(bodyBytes)
+		computedHash := hex.EncodeToString(hasher.Sum(nil))
+
+		// Verify it matches the client's claim
+		if computedHash != strings.ToLower(originalContentSha256) {
+			Logger.Warn("content integrity verification failed - hash mismatch",
+				zap.String("path", req.URL.Path),
+				zap.String("claimed_hash", originalContentSha256),
+				zap.String("computed_hash", computedHash),
+				zap.Int("body_size", len(bodyBytes)))
+			// Don't forward the request - this is a security violation
+			return
+		}
+
+		// Restore the body for backend forwarding
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+		// Use the verified hash when signing to backend
+		payloadHash = computedHash
+
+		Logger.Debug("content integrity verified",
+			zap.String("path", req.URL.Path),
+			zap.String("hash", computedHash),
+			zap.Int("body_size", len(bodyBytes)))
+	} else {
+		// Default: Use UNSIGNED-PAYLOAD for maximum streaming performance
+		// Rely on TLS for transport security (client→proxy→backend all encrypted)
+		payloadHash = unsignedPayload
+	}
+
+	// 5. Remove ONLY client's authorization headers (leave Content-Length, Content-Type, etc.)
 	req.Header.Del("Authorization")
 	req.Header.Del("X-Amz-Date")
 	req.Header.Del("X-Amz-Security-Token")
 	req.Header.Del("X-Amz-Content-Sha256")
 
-	// 5. Sign the request with our custom backend signer
+	// 6. Sign the request with our custom backend signer
 	// CRITICAL: Our custom signer uses S3EncodePath internally, giving us full control
 	// over the canonical URI encoding. It will use req.URL.Path and encode it strictly
 	// according to S3 rules, ensuring the signature matches what the HTTP client sends.
 	// IMPORTANT: AWS SigV4 requires UTC timestamps
-	payloadHash := "UNSIGNED-PAYLOAD"
 	err := p.backendSigner.SignRequest(req, payloadHash, time.Now().UTC())
 	if err != nil {
 		Logger.Error("failed to sign backend request", zap.Error(err))
 		return
 	}
 
-	// 6. Debug logging (only when debug level is enabled)
+	// 7. Debug logging (only when debug level is enabled)
 	if Logger.Core().Enabled(zap.DebugLevel) {
 		Logger.Debug("request signed and forwarding to backend",
 			zap.String("original_host", originalHost),
@@ -329,6 +387,7 @@ func (p *ProxyHandler) director(req *http.Request) {
 			zap.String("path", req.URL.Path),
 			zap.String("encoded_path", S3EncodePath(req.URL.Path)),
 			zap.Bool("streaming", isStreamingUpload),
+			zap.String("payload_hash", payloadHash),
 		)
 	}
 }
@@ -521,7 +580,24 @@ func (p *ProxyHandler) writeS3Error(w http.ResponseWriter, code, message string,
 	}
 }
 
-// generateRequestID generates a simple request ID
+// generateRequestID generates a cryptographically secure random request ID
+// Returns a 16-byte hex string (32 characters) for uniqueness in distributed systems
+// Format: lowercase hex (e.g., "a1b2c3d4e5f6789012345678abcdef01")
 func generateRequestID() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano())
+	// Allocate 16 bytes for the random ID
+	b := make([]byte, 16)
+
+	// Read cryptographically secure random bytes
+	// crypto/rand.Read never returns an error on Unix/Windows systems
+	// but we handle it defensively
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp-based ID only if crypto/rand fails
+		// (should never happen in practice)
+		Logger.Error("failed to generate random request ID, falling back to timestamp",
+			zap.Error(err))
+		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+	}
+
+	// Encode as lowercase hexadecimal string (32 characters)
+	return hex.EncodeToString(b)
 }

@@ -50,6 +50,7 @@ func main() {
 		zap.String("listen_addr", config.Server.ListenAddr),
 		zap.String("backend_endpoint", config.MasterCredentials.Endpoint),
 		zap.Int("num_users", len(config.Users)),
+		zap.Bool("verify_content_integrity", config.Security.VerifyContentIntegrity),
 	)
 
 	// Create identity store
@@ -59,7 +60,7 @@ func main() {
 	authMiddleware := NewAuthMiddleware(identityStore)
 
 	// Create proxy handler
-	proxyHandler := NewProxyHandler(authMiddleware, config.MasterCredentials)
+	proxyHandler := NewProxyHandler(authMiddleware, config.MasterCredentials, config.Security)
 
 	// Create HTTP server
 	server := &http.Server{

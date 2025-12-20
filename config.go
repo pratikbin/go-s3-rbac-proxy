@@ -13,6 +13,7 @@ import (
 type Config struct {
 	MasterCredentials MasterCredentials `yaml:"master_credentials"`
 	Server            ServerConfig      `yaml:"server"`
+	Security          SecurityConfig    `yaml:"security"`
 	Users             []User            `yaml:"users"`
 	Logging           LoggingConfig     `yaml:"logging"`
 }
@@ -32,6 +33,15 @@ type ServerConfig struct {
 	WriteTimeout   string `yaml:"write_timeout"`
 	IdleTimeout    string `yaml:"idle_timeout"`
 	MaxHeaderBytes int    `yaml:"max_header_bytes"`
+}
+
+// SecurityConfig holds security-related settings
+type SecurityConfig struct {
+	// VerifyContentIntegrity enables verification of X-Amz-Content-Sha256 hash against actual body
+	// Default: false (for maximum performance, rely on TLS for transport security)
+	// When true: Buffers and verifies body hash, then forwards with correct hash to backend
+	// Performance impact: Requires reading entire body into memory for hash calculation
+	VerifyContentIntegrity bool `yaml:"verify_content_integrity"`
 }
 
 // User represents a client user with RBAC permissions
@@ -146,4 +156,3 @@ func (u *User) IsAuthorized(bucket string) bool {
 	}
 	return false
 }
-
