@@ -5,6 +5,7 @@ A high-performance, production-ready S3-compatible IAM proxy written in Go that 
 ## Features
 
 - ✅ **AWS Signature V4 Authentication**: Full SigV4 validation for both header-based and presigned URLs
+- ✅ **Optional Content Integrity Verification**: Configurable body hash validation (performance vs. security trade-off)
 - ✅ **Zero-Copy Streaming**: Uses `UNSIGNED-PAYLOAD` and `io.Copy` for memory-efficient request proxying
 - ✅ **RBAC (Role-Based Access Control)**: YAML-based user management with per-bucket permissions
 - ✅ **High Concurrency**: Optimized `http.Transport` with high connection pooling
@@ -38,10 +39,12 @@ A high-performance, production-ready S3-compatible IAM proxy written in Go that 
 
 ## Performance Characteristics
 
-- **Memory**: O(1) - No request body buffering
-- **Latency**: ~1-2ms overhead for signature validation
+- **Memory**: O(1) - No request body buffering (when `verify_content_integrity: false`)
+- **Latency**: ~1-2ms overhead for signature validation (without integrity verification)
 - **Throughput**: Tested at 1000+ concurrent connections
 - **CPU**: Multi-core aware (`GOMAXPROCS=NumCPU`)
+
+*Note: Performance characteristics change when `verify_content_integrity: true` is enabled. See Security section for details.*
 
 ## Installation
 
@@ -86,6 +89,10 @@ server:
   write_timeout: "300s"
   idle_timeout: "120s"
   max_header_bytes: 1048576
+
+# Security settings
+security:
+  verify_content_integrity: false  # See "Content Integrity Verification" section
 
 # User database with RBAC
 users:
@@ -185,14 +192,78 @@ client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 - **Wildcard Support**: Use `"*"` in `allowed_buckets` for admin users
 - **Case-Insensitive**: Bucket names are compared case-insensitively
 
-### Limitations
+### Content Integrity Verification
 
-⚠️ **Body Integrity**: To enable streaming, we do NOT validate the `x-amz-content-sha256` payload hash. The signature proves the client knows the secret key, but they could send a different body than they signed. For most use cases (authorization proxy), this trade-off is acceptable.
+The proxy provides **optional content integrity verification** with configurable security vs. performance trade-offs:
 
-**Mitigation**: If body integrity is critical:
-1. Use TLS/HTTPS for transport security
-2. Trust that backend storage provides checksums
-3. Or implement optional body validation for sensitive buckets (at performance cost)
+#### Default Mode: `verify_content_integrity: false` (Recommended for Performance)
+
+- **Behavior**: Proxy uses `UNSIGNED-PAYLOAD` and streams data without buffering
+- **Security**:
+  - Client's SigV4 signature proves they have the secret key
+  - TLS encrypts transport (client→proxy→backend)
+  - Body hash is NOT verified against actual body content
+- **Performance**:
+  - Zero memory buffering
+  - Constant O(1) memory usage
+  - Minimal latency overhead (~1-2ms)
+- **Use Case**: High-throughput scenarios, trusted networks, authorization-focused deployments
+
+#### Strict Mode: `verify_content_integrity: true` (Security-Critical Deployments)
+
+- **Behavior**: Proxy reads entire body, computes SHA256, verifies against `X-Amz-Content-Sha256` header
+- **Security**:
+  - Prevents tampering between signature generation and proxy
+  - End-to-end integrity from client to backend
+  - Rejects requests with hash mismatches (logged as security violations)
+- **Performance Impact**:
+  - Memory: O(n) - entire body buffered in RAM
+  - Latency: Increased (depends on body size)
+  - Throughput: Reduced for large objects
+- **Use Case**: Compliance requirements, untrusted networks, security-critical data
+
+#### Configuration Example
+
+```yaml
+security:
+  verify_content_integrity: false  # Default: performance
+  # verify_content_integrity: true  # Enable for security-critical deployments
+```
+
+#### Exceptions (Always Skipped)
+
+The following request types are **never** verified, even when `verify_content_integrity: true`:
+
+1. **Streaming uploads**: `STREAMING-AWS4-HMAC-SHA256-PAYLOAD` (uses chunk-level auth)
+2. **Unsigned payloads**: Client explicitly sends `UNSIGNED-PAYLOAD`
+3. **Requests without body**: GET, HEAD, DELETE operations
+4. **Missing hash header**: No `X-Amz-Content-Sha256` provided
+
+#### Security Trade-Off Analysis
+
+| Aspect | verify_content_integrity: false | verify_content_integrity: true |
+|--------|--------------------------------|-------------------------------|
+| **Signature Verification** | ✅ Always enforced | ✅ Always enforced |
+| **Body Hash Verification** | ❌ Not checked | ✅ Verified |
+| **Replay Attack Prevention** | ✅ Timestamp check (±15min) | ✅ Timestamp check (±15min) |
+| **Transport Security** | ✅ TLS encrypted | ✅ TLS encrypted |
+| **Memory Usage** | O(1) constant | O(n) body size |
+| **Latency** | Minimal (~1-2ms) | Higher (depends on size) |
+| **Threat Model** | Authorization proxy | End-to-end integrity |
+
+#### Recommendations
+
+- **Performance-focused** (default): Keep disabled, rely on TLS for transport security
+- **Security-critical**: Enable verification, accept performance trade-off
+- **Hybrid approach**: Run multiple proxy instances (one strict for sensitive buckets, one fast for bulk data)
+
+### Additional Security Best Practices
+
+1. **Use TLS/HTTPS**: Always enable TLS for production deployments
+2. **Network Isolation**: Run proxy in trusted network segment
+3. **Rotate Credentials**: Periodically update master and user credentials
+4. **Monitor Logs**: Alert on authentication failures and hash mismatches
+5. **Least Privilege**: Grant users minimal bucket access needed
 
 ## Deployment
 
@@ -392,4 +463,3 @@ MIT License - see [LICENSE](LICENSE) file for details.
 ---
 
 **Built with ❤️ for developers who need S3 IAM policies on object storage providers that don't support them natively.**
-
