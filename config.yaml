@@ -13,6 +13,27 @@ server:
   idle_timeout: "120s"
   max_header_bytes: 10048576  # 10MB
 
+# Security configuration
+security:
+  # verify_content_integrity: Enable verification of X-Amz-Content-Sha256 hash against actual body
+  #
+  # Default: false (for maximum performance)
+  # - Proxy uses UNSIGNED-PAYLOAD and streams data without buffering
+  # - Relies on TLS for transport security (client→proxy→backend all encrypted)
+  # - Suitable for trusted networks and high-throughput scenarios
+  #
+  # When enabled (true):
+  # - Proxy reads and buffers the entire request body
+  # - Computes SHA256 hash and verifies it matches client's claimed hash
+  # - Forwards with verified hash to backend (not UNSIGNED-PAYLOAD)
+  # - Prevents tampering between signature generation and proxy
+  # - Performance impact: Memory usage increases, latency increases
+  # - Use for: Security-critical deployments, compliance requirements, untrusted networks
+  #
+  # Note: Streaming uploads (STREAMING-AWS4-HMAC-SHA256-PAYLOAD) are never verified
+  # even when this is enabled, as they use chunk-by-chunk authentication
+  verify_content_integrity: false
+
 # User definitions with RBAC
 users:
   - access_key: "user1-access-key"
