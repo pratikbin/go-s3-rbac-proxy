@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -199,15 +200,43 @@ func (a *AuthMiddleware) validatePresignedURL(r *http.Request) (*User, error) {
 		return nil, fmt.Errorf("invalid access key")
 	}
 
-	// Validate expiration
+	// CRITICAL SECURITY: Validate presigned URL expiration
 	requestTime, err := time.Parse(iso8601BasicFormat, date)
 	if err != nil {
 		return nil, fmt.Errorf("invalid x-amz-date format")
 	}
-	// Note: For presigned URLs we don't validate expiry here as it's complex
-	// In production, you'd check current_time < requestTime + expires_seconds
 
-	_ = requestTime // Avoid unused variable warning
+	// Parse expires (duration in seconds)
+	expiresSeconds, err := strconv.ParseInt(expires, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid x-amz-expires format")
+	}
+
+	// AWS allows a maximum of 7 days (604800 seconds) for presigned URL expiry
+	if expiresSeconds < 1 || expiresSeconds > 604800 {
+		Logger.Warn("presigned URL expires out of range",
+			zap.String("access_key", accessKey),
+			zap.Int64("expires_seconds", expiresSeconds))
+		return nil, fmt.Errorf("expires must be between 1 and 604800 seconds")
+	}
+
+	// Calculate expiration time
+	expirationTime := requestTime.Add(time.Duration(expiresSeconds) * time.Second)
+
+	// Check if URL has expired
+	if time.Now().UTC().After(expirationTime) {
+		Logger.Warn("presigned URL has expired",
+			zap.String("access_key", accessKey),
+			zap.Time("request_time", requestTime),
+			zap.Time("expiration_time", expirationTime),
+			zap.Time("current_time", time.Now().UTC()))
+		return nil, fmt.Errorf("presigned URL has expired")
+	}
+
+	Logger.Debug("presigned URL expiry validated",
+		zap.String("access_key", accessKey),
+		zap.Time("expiration_time", expirationTime),
+		zap.Int64("seconds_remaining", int64(time.Until(expirationTime).Seconds())))
 
 	// Build canonical request for presigned URL
 	canonicalRequest := buildCanonicalRequestPresigned(r, signedHeaders)

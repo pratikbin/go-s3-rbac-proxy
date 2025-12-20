@@ -59,8 +59,10 @@ A high-performance S3 reverse proxy that implements fine-grained IAM-like access
 - ✅ Wildcard bucket permissions (`"*"` = all buckets)
 - ✅ ListBuckets interception (prevents information disclosure)
 - ✅ Service-level operation blocking
-- ✅ Request timestamp validation
+- ✅ Request timestamp validation (±15 minute tolerance)
 - ✅ Signature replay attack prevention
+- ✅ **Presigned URL expiry validation** (prevents expired URL reuse)
+- ✅ Presigned URL max duration enforcement (7 days max)
 
 ## Performance Metrics
 
@@ -211,16 +213,41 @@ rclone copy file.txt myproxy:bucket-alpha/
 - Extracts authorization header components (access key, signature, signed headers)
 - Recalculates HMAC-SHA256 signature using user's secret key from YAML
 - Uses `UNSIGNED-PAYLOAD` or `STREAMING-AWS4-HMAC-SHA256-PAYLOAD` to avoid body reading
-- Validates timestamp to prevent replay attacks
+- Validates timestamp to prevent replay attacks (±15 minute tolerance)
+- **Validates presigned URL expiry** to prevent expired URL reuse
 - Special handling for streaming chunked uploads
 
 **Key Functions:**
 
-- `ValidateRequest()` - Main entry point
+- `ValidateRequest()` - Main entry point, detects presigned vs. header-based auth
+- `validatePresignedURL()` - Validates presigned URL expiry and signature
 - `buildCanonicalRequest()` - Constructs canonical request string
 - `getCanonicalURI()` - Properly escapes paths with special characters
 - `buildCanonicalQueryString()` - Sorts and encodes query parameters
 - `calculateSignature()` - HMAC-SHA256 signing logic
+
+**Presigned URL Expiry Validation:**
+
+For presigned URLs, the proxy validates that `current_time < request_time + expires_seconds`:
+
+```go
+// Parse X-Amz-Date and X-Amz-Expires from query parameters
+requestTime, _ := time.Parse(iso8601BasicFormat, date)
+expiresSeconds, _ := strconv.ParseInt(expires, 10, 64)
+
+// Validate expiry duration (1 second to 7 days)
+if expiresSeconds < 1 || expiresSeconds > 604800 {
+    return error("expires must be between 1 and 604800 seconds")
+}
+
+// Calculate and check expiration
+expirationTime := requestTime.Add(time.Duration(expiresSeconds) * time.Second)
+if time.Now().UTC().After(expirationTime) {
+    return error("presigned URL has expired")
+}
+```
+
+This prevents attackers from reusing captured presigned URLs after they've expired, closing a critical security vulnerability.
 
 #### 2. Reverse Proxy (`proxy_handler.go`)
 
