@@ -16,6 +16,14 @@ import (
 	"go.uber.org/zap"
 )
 
+// Context keys for storing user and bucket information
+type contextKey string
+
+const (
+	contextKeyUser   contextKey = "user"
+	contextKeyBucket contextKey = "bucket"
+)
+
 // ProxyHandler handles the reverse proxy logic
 type ProxyHandler struct {
 	authMiddleware *AuthMiddleware
@@ -97,9 +105,9 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store user in context for use in director
-	ctx := context.WithValue(r.Context(), "user", user)
-	ctx = context.WithValue(ctx, "bucket", bucket)
+	// Store user in context for use in director (using typed keys to avoid collisions)
+	ctx := context.WithValue(r.Context(), contextKeyUser, user)
+	ctx = context.WithValue(ctx, contextKeyBucket, bucket)
 	r = r.WithContext(ctx)
 
 	// Proxy the request
@@ -128,13 +136,17 @@ func (p *ProxyHandler) director(req *http.Request) {
 	req.URL.Host = p.backendURL.Host
 	req.Host = p.backendURL.Host
 
-	// Remove client's authorization headers
+	// CRITICAL: Do NOT remove or modify Content-Length header
+	// Hetzner/Ceph Object Storage requires exact Content-Length for multipart uploads
+	// httputil.ReverseProxy preserves it automatically, we just ensure we don't touch it
+
+	// Remove ONLY client's authorization headers (leave Content-Length, Content-Type, etc.)
 	req.Header.Del("Authorization")
 	req.Header.Del("X-Amz-Date")
 	req.Header.Del("X-Amz-Security-Token")
 	req.Header.Del("X-Amz-Content-Sha256")
 
-	// Set unsigned payload for streaming
+	// Set unsigned payload for streaming (doesn't affect Content-Length)
 	req.Header.Set("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD")
 
 	// Sign the request with master credentials (using cached credentials)
@@ -225,7 +237,9 @@ func (p *ProxyHandler) writeS3Error(w http.ResponseWriter, code, message string,
 	<RequestId>%s</RequestId>
 </Error>`, code, message, generateRequestID())
 
-	w.Write([]byte(errorXML))
+	if _, err := w.Write([]byte(errorXML)); err != nil {
+		Logger.Error("failed to write error response", zap.Error(err), zap.String("code", code))
+	}
 }
 
 // generateRequestID generates a simple request ID
