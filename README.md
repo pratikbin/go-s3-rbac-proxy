@@ -257,6 +257,64 @@ The following request types are **never** verified, even when `verify_content_in
 - **Security-critical**: Enable verification, accept performance trade-off
 - **Hybrid approach**: Run multiple proxy instances (one strict for sensitive buckets, one fast for bulk data)
 
+### Multipart Upload Support
+
+The proxy **fully supports S3 multipart uploads** with proper handling of large files:
+
+#### How It Works
+
+1. **Initiate Multipart Upload** (POST with `?uploads`):
+   - Empty body, signed with `UNSIGNED-PAYLOAD`
+   - Returns `uploadId` from backend
+
+2. **Upload Parts** (PUT with `?partNumber=N&uploadId=XXX`):
+   - Large binary data (up to 5GB per part)
+   - Signed with `UNSIGNED-PAYLOAD` for streaming efficiency
+   - Content-Length preserved (required by S3 spec)
+   - Zero-copy streaming through 64KB buffer pool
+
+3. **Complete Multipart Upload** (POST with `?uploadId=XXX`):
+   - XML body contains part ETags
+   - **Key behavior**: Signed with `UNSIGNED-PAYLOAD`
+   - XML body is **still sent and parsed** by backend
+   - Backend validates signature (ignores body hash) but processes XML
+
+#### Why UNSIGNED-PAYLOAD Works for CompleteMultipartUpload
+
+```
+Client → Proxy:
+  - Sends XML: <CompleteMultipartUpload><Part><ETag>...</ETag></Part>...
+  - X-Amz-Content-Sha256: UNSIGNED-PAYLOAD
+  - Signature covers: method, path, headers (not body hash)
+
+Proxy → Backend:
+  - Forwards XML unchanged
+  - Re-signs with: UNSIGNED-PAYLOAD
+  - Backend signature validation: ✅ (checks signature, not body hash)
+  - Backend XML parsing: ✅ (processes <CompleteMultipartUpload>)
+  - Backend verifies part ETags match uploaded parts: ✅
+```
+
+**Result**: ✅ Multipart uploads work correctly without buffering large XML manifests
+
+#### Performance Characteristics
+
+- **Memory**: O(1) - No buffering of parts or XML (streaming only)
+- **Connection Pool**: 50 concurrent uploads per bucket
+- **Timeouts**:
+  - ExpectContinueTimeout: 5s (for 100-continue negotiation)
+  - ResponseHeaderTimeout: 60s (for backend processing)
+- **Max Part Size**: 5GB (S3 limit)
+- **Max Parts**: 10,000 (S3 limit)
+
+#### Tested Scenarios
+
+✅ InitiateMultipartUpload (empty body)
+✅ UploadPart with 5MB binary data
+✅ CompleteMultipartUpload with XML manifest
+✅ CompleteMultipartUpload with verified content hash (optional)
+✅ Content-Length preservation for all operations
+
 ### Additional Security Best Practices
 
 1. **Use TLS/HTTPS**: Always enable TLS for production deployments
