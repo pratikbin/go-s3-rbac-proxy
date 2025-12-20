@@ -1,0 +1,149 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Config represents the entire configuration file structure
+type Config struct {
+	MasterCredentials MasterCredentials `yaml:"master_credentials"`
+	Server            ServerConfig      `yaml:"server"`
+	Users             []User            `yaml:"users"`
+	Logging           LoggingConfig     `yaml:"logging"`
+}
+
+// MasterCredentials are the credentials for the backend (Hetzner)
+type MasterCredentials struct {
+	AccessKey string `yaml:"access_key"`
+	SecretKey string `yaml:"secret_key"`
+	Endpoint  string `yaml:"endpoint"`
+	Region    string `yaml:"region"`
+}
+
+// ServerConfig holds server-specific settings
+type ServerConfig struct {
+	ListenAddr     string `yaml:"listen_addr"`
+	ReadTimeout    string `yaml:"read_timeout"`
+	WriteTimeout   string `yaml:"write_timeout"`
+	IdleTimeout    string `yaml:"idle_timeout"`
+	MaxHeaderBytes int    `yaml:"max_header_bytes"`
+}
+
+// User represents a client user with RBAC permissions
+type User struct {
+	AccessKey      string   `yaml:"access_key"`
+	SecretKey      string   `yaml:"secret_key"`
+	AllowedBuckets []string `yaml:"allowed_buckets"`
+}
+
+// LoggingConfig holds logging configuration
+type LoggingConfig struct {
+	Level  string `yaml:"level"`
+	Format string `yaml:"format"`
+}
+
+// LoadConfig reads and parses the YAML configuration file
+func LoadConfig(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	var config Config
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse config YAML: %w", err)
+	}
+
+	// Validate master credentials
+	if config.MasterCredentials.AccessKey == "" || config.MasterCredentials.SecretKey == "" {
+		return nil, fmt.Errorf("master credentials are missing")
+	}
+	if config.MasterCredentials.Endpoint == "" {
+		return nil, fmt.Errorf("master endpoint is missing")
+	}
+	if config.MasterCredentials.Region == "" {
+		config.MasterCredentials.Region = "us-east-1" // Default
+	}
+
+	// Validate server config
+	if config.Server.ListenAddr == "" {
+		config.Server.ListenAddr = ":8080"
+	}
+
+	// Validate logging config
+	if config.Logging.Level == "" {
+		config.Logging.Level = "info"
+	}
+	if config.Logging.Format == "" {
+		config.Logging.Format = "json"
+	}
+
+	return &config, nil
+}
+
+// GetReadTimeout parses and returns the read timeout duration
+func (s *ServerConfig) GetReadTimeout() time.Duration {
+	d, err := time.ParseDuration(s.ReadTimeout)
+	if err != nil {
+		return 300 * time.Second
+	}
+	return d
+}
+
+// GetWriteTimeout parses and returns the write timeout duration
+func (s *ServerConfig) GetWriteTimeout() time.Duration {
+	d, err := time.ParseDuration(s.WriteTimeout)
+	if err != nil {
+		return 300 * time.Second
+	}
+	return d
+}
+
+// GetIdleTimeout parses and returns the idle timeout duration
+func (s *ServerConfig) GetIdleTimeout() time.Duration {
+	d, err := time.ParseDuration(s.IdleTimeout)
+	if err != nil {
+		return 120 * time.Second
+	}
+	return d
+}
+
+// IdentityStore manages user lookups
+type IdentityStore struct {
+	users map[string]*User // Map of access_key -> User
+}
+
+// NewIdentityStore creates a new identity store from config
+func NewIdentityStore(users []User) *IdentityStore {
+	store := &IdentityStore{
+		users: make(map[string]*User),
+	}
+
+	for i := range users {
+		store.users[users[i].AccessKey] = &users[i]
+	}
+
+	return store
+}
+
+// GetUser retrieves a user by access key
+func (s *IdentityStore) GetUser(accessKey string) (*User, bool) {
+	user, exists := s.users[accessKey]
+	return user, exists
+}
+
+// IsAuthorized checks if a user is authorized to access a specific bucket
+func (u *User) IsAuthorized(bucket string) bool {
+	for _, allowed := range u.AllowedBuckets {
+		if allowed == "*" || strings.EqualFold(allowed, bucket) {
+			return true
+		}
+	}
+	return false
+}
+

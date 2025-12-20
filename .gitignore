@@ -1,0 +1,35 @@
+# Binaries
+s3-proxy
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+*.out
+
+# Go workspace file
+go.work
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Config (if it contains secrets)
+config.local.yaml
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
