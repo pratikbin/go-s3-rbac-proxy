@@ -1,0 +1,38 @@
+# Master credentials for Hetzner Object Storage backend
+master_credentials:
+  access_key: "YOUR_HETZNER_ACCESS_KEY"
+  secret_key: "YOUR_HETZNER_SECRET_KEY"
+  endpoint: "https://fsn1.your-objectstorage.com"
+  region: "us-east-1"  # Hetzner usually uses us-east-1
+
+# Proxy server configuration
+server:
+  listen_addr: ":8080"
+  read_timeout: "300s"
+  write_timeout: "300s"
+  idle_timeout: "120s"
+  max_header_bytes: 10048576  # 10MB
+
+# User definitions with RBAC
+users:
+  - access_key: "user1-access-key"
+    secret_key: "user1-secret-key"
+    allowed_buckets:
+      - "bucket-alpha"
+      - "bucket-beta"
+
+  - access_key: "user2-access-key"
+    secret_key: "user2-secret-key"
+    allowed_buckets:
+      - "bucket-gamma"
+
+  - access_key: "admin-access-key"
+    secret_key: "admin-secret-key"
+    allowed_buckets:
+      - "*"  # Wildcard grants access to all buckets
+
+# Logging configuration
+logging:
+  level: "info"  # debug, info, warn, error
+  format: "json"  # json or console
+

@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  s3-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: s3-proxy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.yaml:/etc/s3-proxy/config.yaml:ro
+    environment:
+      - GOMAXPROCS=4
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Resource limits (adjust based on your needs)
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 512M
+        reservations:
+          cpus: '1'
+          memory: 256M
+
