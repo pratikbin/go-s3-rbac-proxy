@@ -38,3 +38,4 @@ todo.md
 node_modules
 tempfiles/
 agent.md
+.cursor/plans/
