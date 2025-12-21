@@ -20,7 +20,7 @@ const (
 	authorizationHeader     = "Authorization"
 	dateHeader              = "X-Amz-Date"
 	contentSHA256Header     = "X-Amz-Content-Sha256"
-	securityTokenHeader     = "X-Amz-Security-Token"
+	securityTokenHeaderKey  = "X-Amz-Security-Token"
 	signatureQueryKey       = "X-Amz-Signature"
 	unsignedPayload         = "UNSIGNED-PAYLOAD"
 	streamingPayload        = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
