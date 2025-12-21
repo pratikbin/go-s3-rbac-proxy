@@ -577,6 +577,14 @@ func (p *ProxyHandler) errorHandler(w http.ResponseWriter, r *http.Request, err 
 }
 
 // extractBucketFromPath extracts the bucket name from the URL path
+// LIMITATION: This function only supports path-style addressing (/bucket/key).
+// Virtual-host style addressing (bucket.proxy.com/key) is NOT supported.
+// For virtual-host style, the bucket would need to be extracted from the Host header,
+// but this implementation assumes all clients use path-style.
+//
+// If a request comes in with virtual-host style (e.g., Host: bucket.proxy.com, Path: /key),
+// this function will return an empty string, which will trigger a 403 "Service-level operation not supported"
+// error in ServeHTTP. This is the expected behavior for unsupported addressing styles.
 func extractBucketFromPath(path string) string {
 	// S3 path formats:
 	// Virtual-hosted style: not applicable (client sends to proxy)

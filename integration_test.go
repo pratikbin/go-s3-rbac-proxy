@@ -219,9 +219,9 @@ func (m *mockS3Backend) handleGetObject(w http.ResponseWriter, r *http.Request) 
 				parts := strings.Split(rangeSpec, "-")
 				if len(parts) == 2 {
 					var start, end int
-					fmt.Sscanf(parts[0], "%d", &start)
+					_, _ = fmt.Sscanf(parts[0], "%d", &start)
 					if parts[1] != "" {
-						fmt.Sscanf(parts[1], "%d", &end)
+						_, _ = fmt.Sscanf(parts[1], "%d", &end)
 					} else {
 						end = len(body) - 1
 					}
