@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -65,7 +66,18 @@ type LoggingConfig struct {
 
 // LoadConfig reads and parses the YAML configuration file
 func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	// Validate path to prevent path traversal attacks
+	if path == "" {
+		return nil, fmt.Errorf("config path cannot be empty")
+	}
+	// Clean the path to remove any directory traversal attempts
+	cleanPath := filepath.Clean(path)
+	// Ensure the cleaned path is not empty and doesn't contain dangerous patterns
+	if cleanPath == "." || cleanPath == ".." || strings.Contains(cleanPath, "..") {
+		return nil, fmt.Errorf("invalid config path")
+	}
+
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
