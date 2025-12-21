@@ -343,7 +343,11 @@ func (p *ProxyHandler) director(req *http.Request) {
 					zap.String("path", req.URL.Path))
 				return
 			}
-			req.Body.Close()
+			if err := req.Body.Close(); err != nil {
+				Logger.Warn("failed to close request body",
+					zap.Error(err),
+					zap.String("path", req.URL.Path))
+			}
 
 			// Double-check actual size (in case Content-Length was wrong)
 			if int64(len(bodyBytes)) > p.securityConfig.MaxVerifyBodySize {
@@ -392,7 +396,7 @@ func (p *ProxyHandler) director(req *http.Request) {
 	// 5. Remove ONLY client's authorization headers (leave Content-Length, Content-Type, etc.)
 	req.Header.Del("Authorization")
 	req.Header.Del("X-Amz-Date")
-	req.Header.Del("X-Amz-Security-Token")
+	req.Header.Del(securityTokenHeaderKey)
 	req.Header.Del("X-Amz-Content-Sha256")
 
 	// 6. Sign the request with our custom backend signer
