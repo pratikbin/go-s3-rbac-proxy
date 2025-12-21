@@ -55,6 +55,26 @@ func TestGetCanonicalURI_Normalization(t *testing.T) {
 			urlPath:  "/bucket//object",
 			expected: "/bucket//object",
 		},
+		{
+			name:     "DoubleSlashStart",
+			urlPath:  "//bucket/object",
+			expected: "//bucket/object",
+		},
+		{
+			name:     "DotSegment_CurrentDir",
+			urlPath:  "/bucket/./object",
+			expected: "/bucket/./object",
+		},
+		{
+			name:     "DotSegment_ParentDir",
+			urlPath:  "/bucket/../otherbucket/object",
+			expected: "/bucket/../otherbucket/object",
+		},
+		{
+			name:     "MultipleSlashesInKey",
+			urlPath:  "/bucket/folder//file.txt",
+			expected: "/bucket/folder//file.txt",
+		},
 	}
 
 	for _, tt := range tests {
