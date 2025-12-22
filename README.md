@@ -2,6 +2,15 @@
 
 A high-performance, production-ready S3-compatible IAM proxy written in Go that adds fine-grained access control to object storage backends that lack native IAM policies (like Hetzner Object Storage).
 
+## Overview
+
+The proxy sits in front of an S3-compatible backend and:
+
+- Validates AWS SigV4 requests (header-based or presigned URLs).
+- Enforces bucket-level RBAC from a YAML user database.
+- Re-signs requests with backend master credentials.
+- Streams request and response bodies without buffering by default.
+
 ## Features
 
 - ✅ **AWS Signature V4 Authentication**: Full SigV4 validation for both header-based and presigned URLs
@@ -93,6 +102,7 @@ server:
 # Security settings
 security:
   verify_content_integrity: false  # See "Content Integrity Verification" section
+  max_verify_body_size: 52428800
 
 # User database with RBAC
 users:

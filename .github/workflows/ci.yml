@@ -3,6 +3,10 @@ name: CI
 on:
   push:
 
+concurrency:
+  cancel-in-progress: true
+  group: ${{github.workflow}}-${{github.ref}}
+
 jobs:
   ci:
     name: ci
@@ -17,9 +21,6 @@ jobs:
         with:
           cache: true
           cache-dependency-path: go.sum
-
-      - name: Verify Go version
-        run: go version
 
       - name: Install dependencies
         run: go mod download
