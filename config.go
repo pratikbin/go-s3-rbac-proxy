@@ -17,6 +17,7 @@ type Config struct {
 	Security          SecurityConfig    `yaml:"security"`
 	Users             []User            `yaml:"users"`
 	Logging           LoggingConfig     `yaml:"logging"`
+	Metrics           MetricsConfig     `yaml:"metrics"`
 }
 
 // MasterCredentials are the credentials for the backend (Hetzner)
@@ -62,6 +63,13 @@ type User struct {
 type LoggingConfig struct {
 	Level  string `yaml:"level"`
 	Format string `yaml:"format"`
+}
+
+// MetricsConfig holds metrics configuration
+type MetricsConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Address string `yaml:"address"`
+	Path    string `yaml:"path"`
 }
 
 // LoadConfig reads and parses the YAML configuration file
@@ -115,6 +123,14 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Logging.Format == "" {
 		config.Logging.Format = "json"
+	}
+
+	// Validate metrics config
+	if config.Metrics.Address == "" {
+		config.Metrics.Address = ":9090"
+	}
+	if config.Metrics.Path == "" {
+		config.Metrics.Path = "/metrics"
 	}
 
 	return &config, nil

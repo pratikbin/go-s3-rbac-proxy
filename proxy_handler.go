@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +60,88 @@ const (
 	transportMaxConnsPerBucket     = 50
 	transportMaxIdleConnsPerBucket = 100
 )
+
+const (
+	metricsUnknownUser   = "unknown"
+	metricsServiceBucket = "service"
+)
+
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int64
+}
+
+type countingReadCloser struct {
+	reader io.ReadCloser
+	bytes  int64
+}
+
+func (c *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := c.reader.Read(p)
+	if n > 0 {
+		c.bytes += int64(n)
+	}
+	return n, err
+}
+
+func (c *countingReadCloser) Close() error {
+	return c.reader.Close()
+}
+
+func (c *countingReadCloser) BytesRead() int64 {
+	return c.bytes
+}
+
+func newResponseRecorder(w http.ResponseWriter) *responseRecorder {
+	return &responseRecorder{ResponseWriter: w}
+}
+
+func (r *responseRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *responseRecorder) Write(data []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	n, err := r.ResponseWriter.Write(data)
+	r.bytes += int64(n)
+	return n, err
+}
+
+func (r *responseRecorder) Status() int {
+	if r.status == 0 {
+		return http.StatusOK
+	}
+	return r.status
+}
+
+func (r *responseRecorder) BytesWritten() int64 {
+	return r.bytes
+}
+
+func (r *responseRecorder) Flush() {
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (r *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response writer does not support hijacking")
+	}
+	return hijacker.Hijack()
+}
+
+func (r *responseRecorder) Push(target string, opts *http.PushOptions) error {
+	if pusher, ok := r.ResponseWriter.(http.Pusher); ok {
+		return pusher.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
 
 type BufferPool struct {
 	pool sync.Pool
@@ -160,6 +244,30 @@ func NewProxyHandler(authMiddleware *AuthMiddleware, masterCreds MasterCredentia
 // ServeHTTP handles incoming requests
 func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
+	recorder := newResponseRecorder(w)
+
+	var bodyCounter *countingReadCloser
+	if r.Body != nil {
+		bodyCounter = &countingReadCloser{reader: r.Body}
+		r.Body = bodyCounter
+	}
+
+	bucket := extractBucketFromPath(r.URL.Path)
+	bucketLabel := bucket
+	if bucketLabel == "" {
+		bucketLabel = metricsServiceBucket
+	}
+	userLabel := metricsUnknownUser
+
+	defer func() {
+		duration := time.Since(startTime)
+		statusCode := recorder.Status()
+		recordRequestMetrics(r.Method, strconv.Itoa(statusCode), bucketLabel, userLabel, duration.Seconds())
+		if bodyCounter != nil {
+			recordDataTransfer("inbound", userLabel, bucketLabel, bodyCounter.BytesRead())
+		}
+		recordDataTransfer("outbound", userLabel, bucketLabel, recorder.BytesWritten())
+	}()
 
 	// Log request
 	Logger.Info("incoming request",
@@ -175,24 +283,24 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			zap.Error(err),
 			zap.String("path", r.URL.Path),
 		)
-		p.writeS3Error(w, "SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.", http.StatusForbidden)
+		p.writeS3Error(recorder, "SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided.", http.StatusForbidden)
 		return
 	}
+	userLabel = user.AccessKey
 
 	// SECURITY FIX: Intercept ListBuckets (GET /) to prevent exposing all buckets
 	if r.URL.Path == "/" && r.Method == "GET" {
 		Logger.Debug("intercepting ListBuckets request", zap.String("user", user.AccessKey))
-		p.handleListBuckets(w, r, user)
+		p.handleListBuckets(recorder, r, user)
 		return
 	}
 
 	// Extract bucket name from path
-	bucket := extractBucketFromPath(r.URL.Path)
 	if bucket == "" {
 		// Other service-level operations (not ListBuckets)
 		Logger.Debug("service-level operation", zap.String("path", r.URL.Path))
 		// Block unknown service-level operations for security
-		p.writeS3Error(w, "AccessDenied", "Service-level operation not supported", http.StatusForbidden)
+		p.writeS3Error(recorder, "AccessDenied", "Service-level operation not supported", http.StatusForbidden)
 		return
 	}
 
@@ -202,7 +310,7 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			zap.String("user", user.AccessKey),
 			zap.String("bucket", bucket),
 		)
-		p.writeS3Error(w, "AccessDenied", "Access Denied", http.StatusForbidden)
+		p.writeS3Error(recorder, "AccessDenied", "Access Denied", http.StatusForbidden)
 		return
 	}
 
@@ -212,7 +320,7 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(ctx)
 
 	// Proxy the request
-	p.proxy.ServeHTTP(w, r)
+	p.proxy.ServeHTTP(recorder, r)
 
 	duration := time.Since(startTime)
 	Logger.Info("request completed",
@@ -445,7 +553,17 @@ func (p *ProxyHandler) RoundTrip(req *http.Request) (*http.Response, error) {
 	transport := p.getOrCreateTransport(bucket)
 
 	// Execute request using bucket-specific transport
-	return transport.RoundTrip(req)
+	startTime := time.Now()
+	resp, err := transport.RoundTrip(req)
+	duration := time.Since(startTime)
+
+	bucketLabel := bucket
+	if bucketLabel == "" {
+		bucketLabel = metricsServiceBucket
+	}
+	recordBackendLatency(req.Method, bucketLabel, duration.Seconds())
+
+	return resp, err
 }
 
 // getOrCreateTransport returns a bucket-specific transport, creating it if necessary

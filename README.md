@@ -24,17 +24,61 @@ The proxy sits in front of an S3-compatible backend and:
 
 ## Architecture
 
-```
-┌─────────────┐                  ┌──────────────┐                 ┌─────────────────┐
-│   S3 Client │  ──SigV4 Auth──> │  IAM Proxy   │ ──Re-signed──>  │ Hetzner Storage │
-│  (aws-cli)  │                  │   (Go)       │    Request      │   (Backend)     │
-└─────────────┘                  └──────────────┘                 └─────────────────┘
-                                        │
-                                        ▼
-                                  ┌──────────┐
-                                  │ YAML DB  │
-                                  │  Users   │
-                                  └──────────┘
+```mermaid
+graph TB
+    subgraph "Client Layer"
+        CLI[aws-cli / s3cmd / SDK]
+        RCLONE[rclone]
+        SDK[S3 SDKs]
+    end
+
+    subgraph "IAM Proxy - Go Service"
+        PROXY[Proxy Handler<br/>:8080]
+        AUTH[Auth Middleware<br/>SigV4 Validation]
+        RBAC[RBAC Check<br/>Bucket Authorization]
+        SIGNER[Backend Signer<br/>Re-sign Request]
+        POOL[Buffer Pool<br/>Zero-Copy Streaming]
+    end
+
+    subgraph "User Database"
+        YAML[YAML Config<br/>Users & Permissions]
+    end
+
+    subgraph "Backend Storage"
+        HETZNER[Hetzner Object Storage<br/>S3-Compatible API]
+    end
+
+    CLI -->|1. SigV4 Signed Request| PROXY
+    RCLONE -->|1. SigV4 Signed Request| PROXY
+    SDK -->|1. SigV4 Signed Request| PROXY
+
+    PROXY -->|2. Validate Signature| AUTH
+    AUTH -->|3. Lookup User| YAML
+    YAML -->|User Credentials| AUTH
+    AUTH -->|4. Signature Valid| RBAC
+    AUTH -->|Signature Invalid| PROXY
+    PROXY -->|403 Forbidden| CLI
+
+    RBAC -->|5. Check Bucket Access| YAML
+    YAML -->|Allowed Buckets List| RBAC
+    RBAC -->|6. Authorized| SIGNER
+    RBAC -->|Access Denied| PROXY
+    PROXY -->|403 Forbidden| CLI
+
+    SIGNER -->|7. Re-sign with Master Creds| POOL
+    POOL -->|8. Stream Request Body| HETZNER
+    SIGNER -->|8. Forward Headers| HETZNER
+
+    HETZNER -->|9. Response Stream| POOL
+    POOL -->|10. Stream Response| PROXY
+    PROXY -->|11. Return to Client| CLI
+
+    style PROXY fill:#e1f5ff
+    style AUTH fill:#fff4e1
+    style RBAC fill:#ffe1f5
+    style SIGNER fill:#e1ffe1
+    style YAML fill:#f5e1ff
+    style HETZNER fill:#ffe1e1
 ```
 
 ### Request Flow
@@ -53,13 +97,13 @@ The proxy sits in front of an S3-compatible backend and:
 - **Throughput**: Tested at 1000+ concurrent connections
 - **CPU**: Multi-core aware (`GOMAXPROCS=NumCPU`)
 
-*Note: Performance characteristics change when `verify_content_integrity: true` is enabled. See Security section for details.*
+_Note: Performance characteristics change when `verify_content_integrity: true` is enabled. See Security section for details._
 
 ## Installation
 
 ### Prerequisites
 
-- Go 1.21 or higher
+- Go 1.25 or higher
 - Access to Hetzner Object Storage (or any S3-compatible backend)
 
 ### Build from Source
@@ -101,7 +145,7 @@ server:
 
 # Security settings
 security:
-  verify_content_integrity: false  # See "Content Integrity Verification" section
+  verify_content_integrity: false # See "Content Integrity Verification" section
   max_verify_body_size: 52428800
 
 # User database with RBAC
@@ -115,7 +159,7 @@ users:
   - access_key: "admin-key"
     secret_key: "admin-secret"
     allowed_buckets:
-      - "*"  # Access all buckets
+      - "*" # Access all buckets
 
 # Logging
 logging:
@@ -236,7 +280,7 @@ The proxy provides **optional content integrity verification** with configurable
 
 ```yaml
 security:
-  verify_content_integrity: false  # Default: performance
+  verify_content_integrity: false # Default: performance
   # verify_content_integrity: true  # Enable for security-critical deployments
 ```
 
@@ -251,15 +295,15 @@ The following request types are **never** verified, even when `verify_content_in
 
 #### Security Trade-Off Analysis
 
-| Aspect | verify_content_integrity: false | verify_content_integrity: true |
-|--------|--------------------------------|-------------------------------|
-| **Signature Verification** | ✅ Always enforced | ✅ Always enforced |
-| **Body Hash Verification** | ❌ Not checked | ✅ Verified |
-| **Replay Attack Prevention** | ✅ Timestamp check (±15min) | ✅ Timestamp check (±15min) |
-| **Transport Security** | ✅ TLS encrypted | ✅ TLS encrypted |
-| **Memory Usage** | O(1) constant | O(n) body size |
-| **Latency** | Minimal (~1-2ms) | Higher (depends on size) |
-| **Threat Model** | Authorization proxy | End-to-end integrity |
+| Aspect                       | verify_content_integrity: false | verify_content_integrity: true |
+| ---------------------------- | ------------------------------- | ------------------------------ |
+| **Signature Verification**   | ✅ Always enforced              | ✅ Always enforced             |
+| **Body Hash Verification**   | ❌ Not checked                  | ✅ Verified                    |
+| **Replay Attack Prevention** | ✅ Timestamp check (±15min)     | ✅ Timestamp check (±15min)    |
+| **Transport Security**       | ✅ TLS encrypted                | ✅ TLS encrypted               |
+| **Memory Usage**             | O(1) constant                   | O(n) body size                 |
+| **Latency**                  | Minimal (~1-2ms)                | Higher (depends on size)       |
+| **Threat Model**             | Authorization proxy             | End-to-end integrity           |
 
 #### Recommendations
 
@@ -335,22 +379,6 @@ Proxy → Backend:
 
 ## Deployment
 
-### Docker
-
-```dockerfile
-FROM golang:1.21-alpine AS builder
-WORKDIR /app
-COPY . .
-RUN go build -o s3-proxy .
-
-FROM alpine:latest
-RUN apk --no-cache add ca-certificates
-COPY --from=builder /app/s3-proxy /usr/local/bin/
-COPY config.yaml /etc/s3-proxy/config.yaml
-EXPOSE 8080
-CMD ["s3-proxy", "-config", "/etc/s3-proxy/config.yaml"]
-```
-
 ### Systemd Service
 
 ```ini
@@ -384,11 +412,13 @@ curl http://localhost:8080/
 ### Metrics
 
 The proxy logs structured JSON. Integrate with:
+
 - **Prometheus**: Export logs via `promtail` + `loki`
 - **ELK Stack**: Ship logs to Elasticsearch
 - **Datadog**: Use `datadog-agent` log collection
 
 Example log entry:
+
 ```json
 {
   "level": "info",
@@ -429,10 +459,10 @@ export GOGC=off
 
 ```yaml
 server:
-  read_timeout: "600s"    # For large uploads
+  read_timeout: "600s" # For large uploads
   write_timeout: "600s"
   idle_timeout: "120s"
-  max_header_bytes: 2097152  # 2MB for large multipart manifests
+  max_header_bytes: 2097152 # 2MB for large multipart manifests
 ```
 
 ## Testing
@@ -483,6 +513,7 @@ logging:
 ```
 
 Check logs for:
+
 - `canonical_request`: The string being signed
 - `string_to_sign`: The final signing input
 - `expected` vs `provided` signatures

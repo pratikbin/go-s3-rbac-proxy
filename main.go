@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 )
 
@@ -51,6 +52,9 @@ func main() {
 		zap.String("backend_endpoint", config.MasterCredentials.Endpoint),
 		zap.Int("num_users", len(config.Users)),
 		zap.Bool("verify_content_integrity", config.Security.VerifyContentIntegrity),
+		zap.Bool("metrics_enabled", config.Metrics.Enabled),
+		zap.String("metrics_addr", config.Metrics.Address),
+		zap.String("metrics_path", config.Metrics.Path),
 	)
 
 	// Create identity store
@@ -80,6 +84,27 @@ func main() {
 		}
 	}()
 
+	var metricsServer *http.Server
+	if config.Metrics.Enabled {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle(config.Metrics.Path, promhttp.Handler())
+		metricsServer = &http.Server{
+			Addr:              config.Metrics.Address,
+			Handler:           metricsMux,
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+
+		go func() {
+			Logger.Info("starting metrics server",
+				zap.String("addr", metricsServer.Addr),
+				zap.String("path", config.Metrics.Path),
+			)
+			if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				Logger.Fatal("metrics server failed", zap.Error(err))
+			}
+		}()
+	}
+
 	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -93,6 +118,12 @@ func main() {
 
 	if err := server.Shutdown(ctx); err != nil {
 		Logger.Error("server forced to shutdown", zap.Error(err))
+	}
+
+	if metricsServer != nil {
+		if err := metricsServer.Shutdown(ctx); err != nil {
+			Logger.Error("metrics server forced to shutdown", zap.Error(err))
+		}
 	}
 
 	Logger.Info("server stopped")
