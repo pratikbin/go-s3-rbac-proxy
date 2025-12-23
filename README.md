@@ -498,7 +498,7 @@ See `k8s/` directory for Deployment, Service, and ConfigMap manifests.
 curl http://localhost:8080/
 ```
 
-### Metrics
+### Metrics - falky
 
 The proxy exposes Prometheus metrics on a separate endpoint for real-time monitoring and alerting.
 
@@ -508,9 +508,9 @@ Enable metrics in `config.yaml`:
 
 ```yaml
 metrics:
-  enabled: true           # Enable Prometheus metrics endpoint
-  address: ":9090"        # Metrics server address (default: :9090)
-  path: "/metrics"        # Metrics endpoint path (default: /metrics)
+  enabled: true # Enable Prometheus metrics endpoint
+  address: ":9090" # Metrics server address (default: :9090)
+  path: "/metrics" # Metrics endpoint path (default: /metrics)
 ```
 
 #### Available Metrics
@@ -518,23 +518,28 @@ metrics:
 The proxy exposes the following Prometheus metrics:
 
 ##### Request Metrics
+
 - `s3_proxy_requests_total` - Total HTTP requests processed (labels: `method`, `code`, `bucket`, `user`)
 - `s3_proxy_request_duration_seconds` - Request duration histogram (labels: `method`, `bucket`)
 - `s3_proxy_in_flight_requests` - Current number of in-flight requests
 
 ##### Data Transfer Metrics
+
 - `s3_proxy_data_transfer_bytes_total` - Total bytes transferred (labels: `direction`, `user`, `bucket`)
   - `direction`: `in` (upload) or `out` (download)
 
 ##### Backend Performance Metrics
+
 - `s3_proxy_backend_latency_seconds` - Backend (Hetzner) latency histogram (labels: `method`, `bucket`)
 
 ##### Security Metrics
+
 - `s3_proxy_auth_errors_total` - Authentication errors (labels: `reason`)
   - `reason`: `signature_mismatch`, `clock_skew`, `missing_credentials`, etc.
 - `s3_proxy_rbac_denied_total` - RBAC denials (labels: `user`, `bucket`)
 
 ##### System Metrics
+
 - `s3_proxy_buffer_pool_requests_total` - Buffer pool operations (labels: `action`)
   - `action`: `get` (buffer allocation) or `put` (buffer release)
 - Go runtime metrics (via `collectors.NewGoCollector()`):
@@ -550,9 +555,9 @@ Add to `prometheus.yml`:
 
 ```yaml
 scrape_configs:
-  - job_name: 's3-proxy'
+  - job_name: "s3-proxy"
     static_configs:
-      - targets: ['localhost:9090']
+      - targets: ["localhost:9090"]
     scrape_interval: 15s
 ```
 
