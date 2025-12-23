@@ -39,3 +39,4 @@ node_modules
 tempfiles/
 agent.md
 .cursor/plans/
+s3-rbac-proxy

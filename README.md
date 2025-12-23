@@ -165,6 +165,12 @@ users:
 logging:
   level: "info"
   format: "json"
+
+# Metrics (Prometheus)
+metrics:
+  enabled: true
+  address: ":9090"
+  path: "/metrics"
 ```
 
 ## Usage
@@ -381,20 +387,103 @@ Proxy → Backend:
 
 ### Systemd Service
 
-```ini
-[Unit]
-Description=S3 IAM Proxy
-After=network.target
+#### Installation
 
-[Service]
-Type=simple
-User=s3proxy
-ExecStart=/usr/local/bin/s3-proxy -config /etc/s3-proxy/config.yaml
-Restart=on-failure
-RestartSec=5
+Use the provided installation script:
 
-[Install]
-WantedBy=multi-user.target
+```bash
+# Build the binary first
+go build -o s3-proxy .
+
+# Install systemd service (requires root)
+sudo ./install-systemd.sh
+```
+
+#### Service Files
+
+The installation creates:
+
+1. **Service file**: `/etc/systemd/system/s3-proxy.service`
+2. **Environment file**: `/etc/default/s3-proxy` (optional)
+3. **Configuration directory**: `/etc/s3-proxy/`
+4. **Log directory**: `/var/log/s3-proxy/`
+5. **Service user**: `s3proxy`
+
+#### Service Management
+
+```bash
+# Start service
+sudo systemctl start s3-proxy
+
+# Stop service
+sudo systemctl stop s3-proxy
+
+# Enable auto-start on boot
+sudo systemctl enable s3-proxy
+
+# Check status
+sudo systemctl status s3-proxy
+
+# View logs
+sudo journalctl -u s3-proxy -f
+
+# Reload configuration
+sudo systemctl reload s3-proxy
+
+# Restart service
+sudo systemctl restart s3-proxy
+```
+
+#### Security Features
+
+The systemd service includes security hardening:
+
+- **NoNewPrivileges**: Prevents privilege escalation
+- **PrivateTmp**: Isolated temporary directories
+- **ProtectSystem**: Read-only system directories
+- **MemoryDenyWriteExecute**: Prevents memory execution
+- **Resource limits**: File descriptors, processes, memory
+- **Restricted capabilities**: Minimal Linux capabilities
+
+#### Configuration
+
+Edit `/etc/s3-proxy/config.yaml` after installation:
+
+```yaml
+# See Configuration section for details
+```
+
+#### Logging
+
+Logs are captured by systemd journal:
+
+```bash
+# View all logs
+journalctl -u s3-proxy
+
+# Follow logs in real-time
+journalctl -u s3-proxy -f
+
+# View logs since boot
+journalctl -u s3-proxy -b
+
+# View logs with JSON formatting
+journalctl -u s3-proxy -o json
+```
+
+#### Metrics Integration
+
+Metrics are available on port `:9090` by default:
+
+```bash
+# Check metrics endpoint
+curl http://localhost:9090/metrics
+
+# Configure Prometheus to scrape
+# Add to prometheus.yml:
+#   - job_name: 's3-proxy'
+#     static_configs:
+#       - targets: ['localhost:9090']
 ```
 
 ### Kubernetes
@@ -410,6 +499,141 @@ curl http://localhost:8080/
 ```
 
 ### Metrics
+
+The proxy exposes Prometheus metrics on a separate endpoint for real-time monitoring and alerting.
+
+#### Configuration
+
+Enable metrics in `config.yaml`:
+
+```yaml
+metrics:
+  enabled: true           # Enable Prometheus metrics endpoint
+  address: ":9090"        # Metrics server address (default: :9090)
+  path: "/metrics"        # Metrics endpoint path (default: /metrics)
+```
+
+#### Available Metrics
+
+The proxy exposes the following Prometheus metrics:
+
+##### Request Metrics
+- `s3_proxy_requests_total` - Total HTTP requests processed (labels: `method`, `code`, `bucket`, `user`)
+- `s3_proxy_request_duration_seconds` - Request duration histogram (labels: `method`, `bucket`)
+- `s3_proxy_in_flight_requests` - Current number of in-flight requests
+
+##### Data Transfer Metrics
+- `s3_proxy_data_transfer_bytes_total` - Total bytes transferred (labels: `direction`, `user`, `bucket`)
+  - `direction`: `in` (upload) or `out` (download)
+
+##### Backend Performance Metrics
+- `s3_proxy_backend_latency_seconds` - Backend (Hetzner) latency histogram (labels: `method`, `bucket`)
+
+##### Security Metrics
+- `s3_proxy_auth_errors_total` - Authentication errors (labels: `reason`)
+  - `reason`: `signature_mismatch`, `clock_skew`, `missing_credentials`, etc.
+- `s3_proxy_rbac_denied_total` - RBAC denials (labels: `user`, `bucket`)
+
+##### System Metrics
+- `s3_proxy_buffer_pool_requests_total` - Buffer pool operations (labels: `action`)
+  - `action`: `get` (buffer allocation) or `put` (buffer release)
+- Go runtime metrics (via `collectors.NewGoCollector()`):
+  - `go_goroutines` - Number of goroutines
+  - `go_memstats_alloc_bytes` - Memory allocated
+  - `go_gc_duration_seconds` - GC duration
+
+#### Metrics Collection
+
+##### Prometheus Configuration
+
+Add to `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: 's3-proxy'
+    static_configs:
+      - targets: ['localhost:9090']
+    scrape_interval: 15s
+```
+
+##### Grafana Dashboard
+
+Example queries for Grafana:
+
+```sql
+-- Request Rate (per minute)
+rate(s3_proxy_requests_total[1m])
+
+-- 95th Percentile Latency
+histogram_quantile(0.95, rate(s3_proxy_request_duration_seconds_bucket[5m]))
+
+-- Error Rate
+rate(s3_proxy_auth_errors_total[5m]) + rate(s3_proxy_rbac_denied_total[5m])
+
+-- Data Transfer Rate (MB/s)
+rate(s3_proxy_data_transfer_bytes_total[1m]) / 1024 / 1024
+
+-- Backend Latency vs Proxy Latency
+histogram_quantile(0.95, rate(s3_proxy_backend_latency_seconds_bucket[5m]))
+histogram_quantile(0.95, rate(s3_proxy_request_duration_seconds_bucket[5m]))
+```
+
+##### Alerting Rules
+
+Example Prometheus alerting rules:
+
+```yaml
+groups:
+  - name: s3-proxy
+    rules:
+      - alert: HighErrorRate
+        expr: rate(s3_proxy_auth_errors_total[5m]) + rate(s3_proxy_rbac_denied_total[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value }} per second"
+
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, rate(s3_proxy_request_duration_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High request latency detected"
+          description: "95th percentile latency is {{ $value }} seconds"
+
+      - alert: HighBackendLatency
+        expr: histogram_quantile(0.95, rate(s3_proxy_backend_latency_seconds_bucket[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High backend latency detected"
+          description: "Backend 95th percentile latency is {{ $value }} seconds"
+```
+
+#### Performance Characteristics
+
+- **Non-blocking**: All metrics updates use buffered channels (size: 1000) to avoid blocking requests
+- **Drop-when-full**: Metrics are dropped when queue is full to maintain request performance
+- **Low overhead**: Minimal CPU and memory impact on request processing
+
+#### Access Metrics
+
+```bash
+# View raw metrics
+curl http://localhost:9090/metrics
+
+# Filter specific metrics
+curl http://localhost:9090/metrics | grep s3_proxy_
+
+# Count metrics by type
+curl -s http://localhost:9090/metrics | grep -c 's3_proxy_'
+```
+
+### Logging
 
 The proxy logs structured JSON. Integrate with:
 
