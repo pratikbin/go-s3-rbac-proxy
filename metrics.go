@@ -28,6 +28,15 @@ type backendLatencyEvent struct {
 	durationSeconds float64
 }
 
+type authErrorEvent struct {
+	reason string
+}
+
+type rbacDeniedEvent struct {
+	user   string
+	bucket string
+}
+
 var (
 	// Red Metrics
 	httpRequestsTotal = promauto.NewCounterVec(
@@ -64,9 +73,27 @@ var (
 		[]string{"method", "bucket"},
 	)
 
+	authErrorsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "s3_proxy_auth_errors_total",
+			Help: "Total number of authentication errors, labeled by reason.",
+		},
+		[]string{"reason"},
+	)
+
+	rbacDeniedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "s3_proxy_rbac_denied_total",
+			Help: "Total number of RBAC denials, labeled by user and bucket.",
+		},
+		[]string{"user", "bucket"},
+	)
+
 	requestMetricsQueue = make(chan requestMetricsEvent, metricsQueueSize)
 	dataTransferQueue   = make(chan dataTransferEvent, metricsQueueSize)
 	backendLatencyQueue = make(chan backendLatencyEvent, metricsQueueSize)
+	authErrorsQueue     = make(chan authErrorEvent, metricsQueueSize)
+	rbacDeniedQueue     = make(chan rbacDeniedEvent, metricsQueueSize)
 )
 
 func init() {
@@ -84,6 +111,16 @@ func init() {
 	go func() {
 		for event := range backendLatencyQueue {
 			backendLatencySeconds.WithLabelValues(event.method, event.bucket).Observe(event.durationSeconds)
+		}
+	}()
+	go func() {
+		for event := range authErrorsQueue {
+			authErrorsTotal.WithLabelValues(event.reason).Inc()
+		}
+	}()
+	go func() {
+		for event := range rbacDeniedQueue {
+			rbacDeniedTotal.WithLabelValues(event.user, event.bucket).Inc()
 		}
 	}()
 }
@@ -125,6 +162,22 @@ func recordBackendLatency(method, bucket string, durationSeconds float64) {
 		bucket:          bucket,
 		durationSeconds: durationSeconds,
 	}:
+	default:
+		// Drop metrics updates when queue is full to avoid blocking requests.
+	}
+}
+
+func recordAuthError(reason string) {
+	select {
+	case authErrorsQueue <- authErrorEvent{reason: reason}:
+	default:
+		// Drop metrics updates when queue is full to avoid blocking requests.
+	}
+}
+
+func recordRBACDenied(user, bucket string) {
+	select {
+	case rbacDeniedQueue <- rbacDeniedEvent{user: user, bucket: bucket}:
 	default:
 		// Drop metrics updates when queue is full to avoid blocking requests.
 	}

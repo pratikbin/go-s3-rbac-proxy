@@ -310,6 +310,7 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			zap.String("user", user.AccessKey),
 			zap.String("bucket", bucket),
 		)
+		recordRBACDenied(user.AccessKey, bucket)
 		p.writeS3Error(recorder, "AccessDenied", "Access Denied", http.StatusForbidden)
 		return
 	}
