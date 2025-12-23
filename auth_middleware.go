@@ -122,6 +122,7 @@ func (a *AuthMiddleware) ValidateRequest(r *http.Request) (*User, error) {
 	user, exists := a.identityStore.GetUser(accessKey)
 	if !exists {
 		Logger.Warn("user not found", zap.String("access_key", accessKey))
+		recordAuthError("invalid_access_key")
 		return nil, fmt.Errorf("invalid access key")
 	}
 
@@ -137,6 +138,7 @@ func (a *AuthMiddleware) ValidateRequest(r *http.Request) (*User, error) {
 		return nil, fmt.Errorf("invalid x-amz-date format")
 	}
 	if time.Since(requestTime).Abs() > maxClockSkew {
+		recordAuthError("clock_skew")
 		return nil, fmt.Errorf("request timestamp too skewed")
 	}
 
@@ -184,6 +186,7 @@ func (a *AuthMiddleware) ValidateRequest(r *http.Request) (*User, error) {
 			zap.String("canonical_request", canonicalRequest),
 			zap.String("string_to_sign", stringToSign),
 		)
+		recordAuthError("signature_mismatch")
 		return nil, fmt.Errorf("signature does not match")
 	}
 
@@ -215,6 +218,7 @@ func (a *AuthMiddleware) validatePresignedURL(r *http.Request) (*User, error) {
 		Logger.Warn("presigned URL double signing attempt detected",
 			zap.String("query_date", date),
 			zap.String("header_date", headerDate))
+		recordAuthError("double_signing")
 		return nil, fmt.Errorf("X-Amz-Date mismatch between header and query parameter")
 	}
 
@@ -231,6 +235,7 @@ func (a *AuthMiddleware) validatePresignedURL(r *http.Request) (*User, error) {
 	// Lookup user
 	user, exists := a.identityStore.GetUser(accessKey)
 	if !exists {
+		recordAuthError("invalid_access_key")
 		return nil, fmt.Errorf("invalid access key")
 	}
 
@@ -255,6 +260,7 @@ func (a *AuthMiddleware) validatePresignedURL(r *http.Request) (*User, error) {
 			zap.Time("server_time", now),
 			zap.Duration("clock_skew", timeDelta),
 			zap.Duration("max_allowed_skew", maxClockSkew))
+		recordAuthError("clock_skew")
 		return nil, fmt.Errorf("request timestamp outside acceptable time window (±15 minutes)")
 	}
 
@@ -282,6 +288,7 @@ func (a *AuthMiddleware) validatePresignedURL(r *http.Request) (*User, error) {
 			zap.Time("request_time", requestTime),
 			zap.Time("expiration_time", expirationTime),
 			zap.Time("current_time", time.Now().UTC()))
+		recordAuthError("expired")
 		return nil, fmt.Errorf("presigned URL has expired")
 	}
 
@@ -302,6 +309,7 @@ func (a *AuthMiddleware) validatePresignedURL(r *http.Request) (*User, error) {
 	// Compare signatures
 	if !hmac.Equal([]byte(calculatedSignature), []byte(signature)) {
 		Logger.Warn("presigned URL signature mismatch", zap.String("access_key", accessKey))
+		recordAuthError("signature_mismatch")
 		return nil, fmt.Errorf("signature does not match")
 	}
 
