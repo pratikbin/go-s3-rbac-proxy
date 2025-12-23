@@ -89,6 +89,21 @@ var (
 		[]string{"user", "bucket"},
 	)
 
+	inFlightRequests = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "s3_proxy_in_flight_requests",
+		Help: "Current number of in-flight requests.",
+	})
+
+	bufferPoolRequestsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "s3_proxy_buffer_pool_requests_total",
+			Help: "Total number of buffer pool requests, labeled by action.",
+		},
+		[]string{"action"},
+	)
+	bufferPoolRequestsGet = bufferPoolRequestsTotal.WithLabelValues("get")
+	bufferPoolRequestsPut = bufferPoolRequestsTotal.WithLabelValues("put")
+
 	requestMetricsQueue = make(chan requestMetricsEvent, metricsQueueSize)
 	dataTransferQueue   = make(chan dataTransferEvent, metricsQueueSize)
 	backendLatencyQueue = make(chan backendLatencyEvent, metricsQueueSize)
@@ -97,6 +112,12 @@ var (
 )
 
 func init() {
+	if err := prometheus.Register(prometheus.NewGoCollector()); err != nil {
+		if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
+			panic(err)
+		}
+	}
+
 	go func() {
 		for event := range requestMetricsQueue {
 			httpRequestsTotal.WithLabelValues(event.method, event.code, event.bucket, event.user).Inc()
@@ -181,4 +202,12 @@ func recordRBACDenied(user, bucket string) {
 	default:
 		// Drop metrics updates when queue is full to avoid blocking requests.
 	}
+}
+
+func recordBufferPoolGet() {
+	bufferPoolRequestsGet.Inc()
+}
+
+func recordBufferPoolPut() {
+	bufferPoolRequestsPut.Inc()
 }

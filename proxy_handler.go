@@ -162,6 +162,7 @@ func NewBufferPool() *BufferPool {
 
 // Get retrieves a buffer from the pool
 func (bp *BufferPool) Get() []byte {
+	recordBufferPoolGet()
 	bufPtr := bp.pool.Get().(*[]byte)
 	return *bufPtr
 }
@@ -172,6 +173,7 @@ func (bp *BufferPool) Put(buf []byte) {
 		// Don't pool buffers of wrong size
 		return
 	}
+	recordBufferPoolPut()
 	// Reset the slice to full capacity before returning to pool
 	buf = buf[:cap(buf)]
 	bp.pool.Put(&buf)
@@ -245,6 +247,9 @@ func NewProxyHandler(authMiddleware *AuthMiddleware, masterCreds MasterCredentia
 func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 	recorder := newResponseRecorder(w)
+
+	inFlightRequests.Inc()
+	defer inFlightRequests.Dec()
 
 	var bodyCounter *countingReadCloser
 	if r.Body != nil {
