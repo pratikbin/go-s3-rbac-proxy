@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
@@ -112,7 +113,7 @@ var (
 )
 
 func init() {
-	if err := prometheus.Register(prometheus.NewGoCollector()); err != nil {
+	if err := prometheus.Register(collectors.NewGoCollector()); err != nil {
 		if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
 			panic(err)
 		}

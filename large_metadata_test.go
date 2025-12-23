@@ -93,7 +93,7 @@ func TestIntegration_LargeMetadata_8KBLimit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetObject failed: %v", err)
 		}
-		defer getResult.Body.Close()
+		defer func() { _ = getResult.Body.Close() }()
 
 		retrievedData, _ := io.ReadAll(getResult.Body)
 		if !bytes.Equal(retrievedData, testData) {

@@ -66,7 +66,7 @@ func TestIntegration_PathNormalization_EdgeCases(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetObject with double slashes failed: %v", err)
 		}
-		defer getResult.Body.Close()
+		defer func() { _ = getResult.Body.Close() }()
 
 		retrievedData, _ := io.ReadAll(getResult.Body)
 		if !bytes.Equal(retrievedData, testData) {
@@ -177,7 +177,7 @@ func TestIntegration_PathNormalization_EdgeCases(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetObject failed: %v", err)
 		}
-		defer getResult.Body.Close()
+		defer func() { _ = getResult.Body.Close() }()
 
 		retrievedData, _ := io.ReadAll(getResult.Body)
 		if !bytes.Equal(retrievedData, testData) {
@@ -202,7 +202,7 @@ func TestIntegration_PathNormalization_EdgeCases(t *testing.T) {
 			{"OnlyBucket", "/bucket", "bucket"},
 			{"OnlyBucketTrailingSlash", "/bucket/", "bucket"},
 			{"PathTraversal", "/bucket/../other/key", "bucket"}, // First segment is extracted
-			{"DotSegment", "/bucket/./key", "bucket"},          // First segment is extracted
+			{"DotSegment", "/bucket/./key", "bucket"},           // First segment is extracted
 			{"MultipleSlashes", "/bucket//key", "bucket"},       // First segment is extracted
 		}
 

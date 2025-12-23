@@ -57,7 +57,7 @@ func TestIntegration_RangeRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetObject with Range failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// 3. Verify Response
 	// Verify Content-Range header if SDK exposes it (it usually does in ContentRange field)
