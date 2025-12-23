@@ -553,12 +553,6 @@ MIT License - see [LICENSE](LICENSE) file for details.
 - `aws-sdk-go-v2` for SigV4 signer
 - `uber-go/zap` for logging
 
-## Support
-
-- 🐛 **Issues**: [GitHub Issues](https://github.com/pratikbin/go-s3-rbac-single-bucket/issues)
-- 💬 **Discussions**: [GitHub Discussions](https://github.com/pratikbin/go-s3-rbac-single-bucket/discussions)
-- 📧 **Email**: pratik@example.com
-
 ---
 
 **Built with ❤️ for developers who need S3 IAM policies on object storage providers that don't support them natively.**
