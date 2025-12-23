@@ -9,3 +9,4 @@ alwaysApply: true
 - At the end of all the `**.go` file changes, must run test cases if there any, then golangci-lint, staticcheck, gosec, govulncheck parallely as well if you want
 - if testcases fails, check the code first, then change the testcase if requires
 - once plans completes delete plan file
+- all the metrics should be non blocking with the core business logic as long as it's possible

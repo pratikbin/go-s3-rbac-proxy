@@ -159,7 +159,7 @@ func TestIntegration_HTTP100Continue_EarlyRejection(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		// Verify rejection
 		if resp.StatusCode != http.StatusForbidden {
@@ -230,7 +230,7 @@ func TestIntegration_HTTP100Continue_EarlyRejection(t *testing.T) {
 		client := &http.Client{Timeout: 5 * time.Second}
 		resp, _ := client.Do(req)
 		if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 
 		// Verify body was NOT read (auth failed before body read)

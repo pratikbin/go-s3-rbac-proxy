@@ -37,7 +37,7 @@ func Test100Continue_EarlyRejection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Verify 403 Forbidden
 	if resp.StatusCode != http.StatusForbidden {

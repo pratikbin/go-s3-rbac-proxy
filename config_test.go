@@ -37,7 +37,7 @@ logging:
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpfile.Name())
+	defer func() { _ = os.Remove(tmpfile.Name()) }()
 
 	if _, err := tmpfile.Write([]byte(configContent)); err != nil {
 		t.Fatal(err)
@@ -157,12 +157,14 @@ this is not: [valid: yaml
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer os.Remove(tmpfile.Name())
+			defer func() { _ = os.Remove(tmpfile.Name()) }()
 
 			if _, err := tmpfile.Write([]byte(tt.content)); err != nil {
 				t.Fatal(err)
 			}
-			tmpfile.Close()
+			if err := tmpfile.Close(); err != nil {
+				t.Fatal(err)
+			}
 
 			_, err = LoadConfig(tmpfile.Name())
 			if err == nil {
@@ -171,4 +173,3 @@ this is not: [valid: yaml
 		})
 	}
 }
-

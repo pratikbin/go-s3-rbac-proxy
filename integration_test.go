@@ -588,7 +588,7 @@ func TestIntegration_AccessDenied_CrossBucket(t *testing.T) {
 		}
 
 		retrievedData, _ := io.ReadAll(getResult.Body)
-		getResult.Body.Close()
+		_ = getResult.Body.Close()
 
 		if !bytes.Equal(retrievedData, testData) {
 			t.Errorf("Data mismatch: expected %s, got %s", testData, retrievedData)
@@ -707,7 +707,7 @@ func TestIntegration_DataIntegrity_Streaming(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetObject failed: %v", err)
 			}
-			defer getResult.Body.Close()
+			defer func() { _ = getResult.Body.Close() }()
 
 			retrievedData, err := io.ReadAll(getResult.Body)
 			if err != nil {
@@ -825,7 +825,7 @@ func TestIntegration_URIEncoding_SpecialChars(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetObject failed for key '%s': %v", tc.key, err)
 			}
-			defer getResult.Body.Close()
+			defer func() { _ = getResult.Body.Close() }()
 
 			retrievedData, err := io.ReadAll(getResult.Body)
 			if err != nil {
@@ -967,7 +967,7 @@ func TestIntegration_MultipartUpload_Complete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetObject failed after multipart upload: %v", err)
 	}
-	defer getResult.Body.Close()
+	defer func() { _ = getResult.Body.Close() }()
 
 	retrievedData, err := io.ReadAll(getResult.Body)
 	if err != nil {
@@ -1042,7 +1042,7 @@ func TestIntegration_Security_SignatureTampering(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		// Verify rejection
 		if resp.StatusCode != http.StatusForbidden {
@@ -1131,9 +1131,9 @@ func TestIntegration_Security_PresignedURL(t *testing.T) {
 		// Use presigned URL
 		resp, err := http.Get(presignedReq.URL)
 		if err != nil {
-			t.Fatalf("Presigned URL request failed: %v", err)
+			t.Fatalf("Request failed: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
@@ -1171,7 +1171,7 @@ func TestIntegration_Security_PresignedURL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		// Should be rejected before reaching backend
 		if resp.StatusCode == http.StatusOK {
