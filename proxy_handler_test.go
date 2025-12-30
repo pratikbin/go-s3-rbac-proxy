@@ -91,7 +91,7 @@ func TestGenerateRequestIDFormat(t *testing.T) {
 			name: "contains_only_hex_chars",
 			test: func(id string) bool {
 				for _, c := range id {
-					if !(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f') {
+					if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 						return false
 					}
 				}
@@ -102,7 +102,7 @@ func TestGenerateRequestIDFormat(t *testing.T) {
 			name: "no_uppercase_letters",
 			test: func(id string) bool {
 				for _, c := range id {
-					if !(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f') {
+					if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 						return false
 					}
 				}
@@ -113,7 +113,7 @@ func TestGenerateRequestIDFormat(t *testing.T) {
 			name: "no_special_characters",
 			test: func(id string) bool {
 				for _, c := range id {
-					if !(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f') {
+					if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 						return false
 					}
 				}
