@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// #nosec G101
 const (
 	// AWS SigV4 algorithm identifier
 	algorithm = "AWS4-HMAC-SHA256"
@@ -26,8 +27,8 @@ type BackendSigner struct {
 	service   string
 
 	// Signing key cache (saves 4 HMAC operations per request)
-	mu              sync.RWMutex
-	cachedDateStamp string
+	mu               sync.RWMutex
+	cachedDateStamp  string
 	cachedSigningKey []byte
 }
 

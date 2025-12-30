@@ -15,6 +15,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// #nosec G101
 const (
 	defaultConfigPath = "./config.yaml"
 	shutdownTimeout   = 30 * time.Second

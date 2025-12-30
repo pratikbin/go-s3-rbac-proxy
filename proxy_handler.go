@@ -25,6 +25,7 @@ import (
 // Using unexported int type prevents collisions with string-based keys from other packages
 type contextKey int
 
+// #nosec G101
 const (
 	contextKeyUser contextKey = iota
 	contextKeyBucket
@@ -54,6 +55,7 @@ const optimalBufferSize = 64 * 1024 // 64KB
 //   - Up to 750 requests/s per source IP
 //
 // Transport configuration (derived from Hetzner limits):
+// #nosec G101
 const (
 	// Allocate 50 connections per bucket to support 5+ buckets under the 256/IP limit
 	// This allows parallel multipart uploads while respecting Hetzner's constraints
@@ -61,6 +63,7 @@ const (
 	transportMaxIdleConnsPerBucket = 100
 )
 
+// #nosec G101
 const (
 	metricsUnknownUser   = "unknown"
 	metricsServiceBucket = "service"

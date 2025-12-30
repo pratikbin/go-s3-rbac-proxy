@@ -16,6 +16,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// #nosec G101
 const (
 	authorizationHeader     = "Authorization"
 	dateHeader              = "X-Amz-Date"
