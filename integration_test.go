@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,30 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
+
+// S3 XML response structures
+type InitiateMultipartUploadResult struct {
+	XMLName  xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ InitiateMultipartUploadResult"`
+	Bucket   string   `xml:"Bucket"`
+	Key      string   `xml:"Key"`
+	UploadId string   `xml:"UploadId"`
+}
+
+type CompleteMultipartUploadResult struct {
+	XMLName  xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ CompleteMultipartUploadResult"`
+	Location string   `xml:"Location"`
+	Bucket   string   `xml:"Bucket"`
+	Key      string   `xml:"Key"`
+	ETag     string   `xml:"ETag"`
+}
+
+type DeleteResult struct {
+	XMLName xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ DeleteResult"`
+}
+
+type MockS3Response struct {
+	XMLName xml.Name `xml:"MockS3Response"`
+}
 
 // mockS3Backend simulates an S3 backend for integration testing
 type mockS3Backend struct {
@@ -103,8 +128,14 @@ func (m *mockS3Backend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Default response
 	w.Header().Set("ETag", `"mock-etag"`)
+	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><MockS3Response></MockS3Response>`))
+
+	// Write XML declaration and marshaled result
+	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>`))
+	if err := xml.NewEncoder(w).Encode(MockS3Response{}); err != nil {
+		http.Error(w, "Failed to encode XML response", http.StatusInternalServerError)
+	}
 }
 
 func (m *mockS3Backend) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Request) {
@@ -116,18 +147,21 @@ func (m *mockS3Backend) handleCreateMultipartUpload(w http.ResponseWriter, r *ht
 	// Extract key from path (remove bucket prefix)
 	key := strings.TrimPrefix(r.URL.Path, "/test-bucket/")
 
-	response := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-	<Bucket>test-bucket</Bucket>
-	<Key>%s</Key>
-	<UploadId>%s</UploadId>
-</InitiateMultipartUploadResult>`, key, uploadID)
+	// Create XML response using proper marshaling
+	result := InitiateMultipartUploadResult{
+		Bucket:   "test-bucket",
+		Key:      key,
+		UploadId: uploadID,
+	}
 
-	responseBytes := []byte(response)
 	w.Header().Set("Content-Type", "application/xml")
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(responseBytes)))
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(responseBytes)
+
+	// Write XML declaration and marshaled result
+	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>`))
+	if err := xml.NewEncoder(w).Encode(result); err != nil {
+		http.Error(w, "Failed to encode XML response", http.StatusInternalServerError)
+	}
 }
 
 func (m *mockS3Backend) handleUploadPart(w http.ResponseWriter, r *http.Request) {
@@ -177,17 +211,22 @@ func (m *mockS3Backend) handleCompleteMultipartUpload(w http.ResponseWriter, r *
 	// Extract key from path
 	key := strings.TrimPrefix(r.URL.Path, "/test-bucket/")
 
-	response := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<CompleteMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-	<Location>http://test-bucket.s3.amazonaws.com/%s</Location>
-	<Bucket>test-bucket</Bucket>
-	<Key>%s</Key>
-	<ETag>"multipart-complete-etag"</ETag>
-</CompleteMultipartUploadResult>`, key, key)
+	// Create XML response using proper marshaling
+	result := CompleteMultipartUploadResult{
+		Location: fmt.Sprintf("http://test-bucket.s3.amazonaws.com/%s", key),
+		Bucket:   "test-bucket",
+		Key:      key,
+		ETag:     `"multipart-complete-etag"`,
+	}
 
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(response))
+
+	// Write XML declaration and marshaled result
+	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>`))
+	if err := xml.NewEncoder(w).Encode(result); err != nil {
+		http.Error(w, "Failed to encode XML response", http.StatusInternalServerError)
+	}
 }
 
 func (m *mockS3Backend) handlePutObject(w http.ResponseWriter, r *http.Request) {

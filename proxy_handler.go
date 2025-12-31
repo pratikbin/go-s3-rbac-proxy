@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net"
@@ -30,6 +31,32 @@ const (
 	contextKeyUser contextKey = iota
 	contextKeyBucket
 )
+
+// XML structures for S3 responses
+type S3ErrorResponse struct {
+	XMLName   xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ Error"`
+	Code      string   `xml:"Code"`
+	Message   string   `xml:"Message"`
+	RequestId string   `xml:"RequestId"`
+}
+
+type Owner struct {
+	XMLName     xml.Name `xml:"Owner"`
+	ID          string   `xml:"ID"`
+	DisplayName string   `xml:"DisplayName"`
+}
+
+type Bucket struct {
+	XMLName      xml.Name `xml:"Bucket"`
+	Name         string   `xml:"Name"`
+	CreationDate string   `xml:"CreationDate"`
+}
+
+type ListAllMyBucketsResult struct {
+	XMLName xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ListAllMyBucketsResult"`
+	Owner   Owner    `xml:"Owner"`
+	Buckets []Bucket `xml:"Buckets>Bucket"`
+}
 
 // PERFORMANCE: BufferPool implements httputil.BufferPool for zero-allocation buffer reuse
 // Using 64KB buffers (optimal for S3 chunk sizes and network MTU multiples)
@@ -174,12 +201,125 @@ func (bp *BufferPool) Get() []byte {
 func (bp *BufferPool) Put(buf []byte) {
 	if cap(buf) != optimalBufferSize {
 		// Don't pool buffers of wrong size
+		recordBufferPoolDiscard()
 		return
 	}
 	recordBufferPoolPut()
 	// Reset the slice to full capacity before returning to pool
 	buf = buf[:cap(buf)]
 	bp.pool.Put(&buf)
+}
+
+// StreamingUpload tracks an active streaming/chunked upload
+type StreamingUpload struct {
+	UserAccessKey string
+	Bucket        string
+	Key           string
+	StartTime     time.Time
+	BytesReceived int64
+	UploadID      string // For multipart uploads
+}
+
+// StreamingUploadTracker manages concurrent streaming uploads with limits
+type StreamingUploadTracker struct {
+	mu              sync.RWMutex
+	uploads         map[string]*StreamingUpload // key: request ID or connection ID
+	userUploadCount map[string]int              // user access key -> count
+	maxConcurrent   int
+	maxSize         int64
+	maxDuration     time.Duration
+}
+
+// NewStreamingUploadTracker creates a new tracker with security limits
+func NewStreamingUploadTracker(maxConcurrent int, maxSize int64, maxDuration time.Duration) *StreamingUploadTracker {
+	return &StreamingUploadTracker{
+		uploads:         make(map[string]*StreamingUpload),
+		userUploadCount: make(map[string]int),
+		maxConcurrent:   maxConcurrent,
+		maxSize:         maxSize,
+		maxDuration:     maxDuration,
+	}
+}
+
+// TryStartUpload attempts to start a new streaming upload with security checks
+func (t *StreamingUploadTracker) TryStartUpload(id, userAccessKey, bucket, key, uploadID string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Check user concurrency limit
+	if t.maxConcurrent > 0 {
+		currentCount := t.userUploadCount[userAccessKey]
+		if currentCount >= t.maxConcurrent {
+			return fmt.Errorf("user %s has reached maximum concurrent streaming uploads (%d)", userAccessKey, t.maxConcurrent)
+		}
+	}
+
+	// Check total concurrent uploads (optional, but good for resource protection)
+	// We'll skip this for now to focus on per-user limits
+
+	// Create and register the upload
+	upload := &StreamingUpload{
+		UserAccessKey: userAccessKey,
+		Bucket:        bucket,
+		Key:           key,
+		StartTime:     time.Now(),
+		BytesReceived: 0,
+		UploadID:      uploadID,
+	}
+
+	t.uploads[id] = upload
+	t.userUploadCount[userAccessKey]++
+
+	return nil
+}
+
+// UpdateBytes updates the byte count for an upload and checks size limits
+func (t *StreamingUploadTracker) UpdateBytes(id string, bytes int64) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	upload, exists := t.uploads[id]
+	if !exists {
+		return fmt.Errorf("upload not found: %s", id)
+	}
+
+	upload.BytesReceived += bytes
+
+	// Check size limit
+	if t.maxSize > 0 && upload.BytesReceived > t.maxSize {
+		t.cleanupUpload(id, upload.UserAccessKey)
+		return fmt.Errorf("streaming upload exceeded maximum size (%d bytes)", t.maxSize)
+	}
+
+	// Check duration limit
+	if t.maxDuration > 0 && time.Since(upload.StartTime) > t.maxDuration {
+		t.cleanupUpload(id, upload.UserAccessKey)
+		return fmt.Errorf("streaming upload exceeded maximum duration (%v)", t.maxDuration)
+	}
+
+	return nil
+}
+
+// CompleteUpload marks an upload as completed and cleans up resources
+func (t *StreamingUploadTracker) CompleteUpload(id string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if upload, exists := t.uploads[id]; exists {
+		t.cleanupUpload(id, upload.UserAccessKey)
+	}
+}
+
+// cleanupUpload removes an upload and updates user count
+func (t *StreamingUploadTracker) cleanupUpload(id, userAccessKey string) {
+	delete(t.uploads, id)
+	if count, exists := t.userUploadCount[userAccessKey]; exists {
+		if count <= 1 {
+			delete(t.userUploadCount, userAccessKey)
+		} else {
+			t.userUploadCount[userAccessKey] = count - 1
+		}
+	}
 }
 
 // ProxyHandler handles the reverse proxy logic
@@ -193,6 +333,7 @@ type ProxyHandler struct {
 	bufferPool     *BufferPool  // Zero-allocation buffer pool
 	transports     sync.Map     // Per-bucket transports: map[string]*http.Transport
 	transportMu    sync.RWMutex // Protects transport creation
+	uploadTracker  *StreamingUploadTracker
 }
 
 // NewProxyHandler creates a new proxy handler with zero-allocation optimizations
@@ -213,6 +354,13 @@ func NewProxyHandler(authMiddleware *AuthMiddleware, masterCreds MasterCredentia
 		masterCreds.Region,
 	)
 
+	// Initialize streaming upload tracker with security limits
+	uploadTracker := NewStreamingUploadTracker(
+		securityConfig.MaxConcurrentStreamingUploads,
+		securityConfig.MaxStreamingUploadSize,
+		securityConfig.GetMaxStreamingUploadDuration(),
+	)
+
 	handler := &ProxyHandler{
 		authMiddleware: authMiddleware,
 		masterCreds:    masterCreds,
@@ -220,6 +368,7 @@ func NewProxyHandler(authMiddleware *AuthMiddleware, masterCreds MasterCredentia
 		backendURL:     backendURL,
 		backendSigner:  backendSigner,
 		bufferPool:     bufferPool,
+		uploadTracker:  uploadTracker,
 		// transports is initialized as sync.Map (zero value is ready to use)
 	}
 
@@ -260,7 +409,7 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Body = bodyCounter
 	}
 
-	bucket := extractBucketFromPath(r.URL.Path)
+	bucket := extractBucket(r)
 	bucketLabel := bucket
 	if bucketLabel == "" {
 		bucketLabel = metricsServiceBucket
@@ -361,43 +510,39 @@ func (p *ProxyHandler) handleListBuckets(w http.ResponseWriter, r *http.Request,
 	}
 
 	// Build S3 ListAllMyBucketsResult XML response
-	buf := getBuffer()
-	defer putBuffer(buf)
-
-	buf.WriteString(`<?xml version="1.0" encoding="UTF-8"?>`)
-	buf.WriteString(`<ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`)
-	buf.WriteString(`<Owner>`)
-	buf.WriteString(`<ID>`)
-	buf.WriteString(user.AccessKey)
-	buf.WriteString(`</ID>`)
-	buf.WriteString(`<DisplayName>`)
-	buf.WriteString(user.AccessKey)
-	buf.WriteString(`</DisplayName>`)
-	buf.WriteString(`</Owner>`)
-	buf.WriteString(`<Buckets>`)
-
-	// Add each authorized bucket
 	creationDate := time.Now().UTC().Format(time.RFC3339)
-	for _, bucket := range buckets {
-		buf.WriteString(`<Bucket>`)
-		buf.WriteString(`<Name>`)
-		buf.WriteString(bucket)
-		buf.WriteString(`</Name>`)
-		buf.WriteString(`<CreationDate>`)
-		buf.WriteString(creationDate)
-		buf.WriteString(`</CreationDate>`)
-		buf.WriteString(`</Bucket>`)
+
+	// Create bucket list
+	var bucketList []Bucket
+	for _, bucketName := range buckets {
+		bucketList = append(bucketList, Bucket{
+			Name:         bucketName,
+			CreationDate: creationDate,
+		})
 	}
 
-	buf.WriteString(`</Buckets>`)
-	buf.WriteString(`</ListAllMyBucketsResult>`)
+	result := ListAllMyBucketsResult{
+		Owner: Owner{
+			ID:          user.AccessKey,
+			DisplayName: user.AccessKey,
+		},
+		Buckets: bucketList,
+	}
 
 	// Write response
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
 
-	if _, err := w.Write(buf.Bytes()); err != nil {
-		Logger.Error("failed to write ListBuckets response", zap.Error(err))
+	xmlHeader := []byte(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
+	if _, err := w.Write(xmlHeader); err != nil {
+		Logger.Error("failed to write XML header", zap.Error(err))
+		return
+	}
+
+	encoder := xml.NewEncoder(w)
+	encoder.Indent("", "\t")
+	if err := encoder.Encode(result); err != nil {
+		Logger.Error("failed to encode ListBuckets response", zap.Error(err))
 	}
 
 	Logger.Info("ListBuckets response sent",
@@ -729,20 +874,86 @@ func extractBucketFromPath(path string) string {
 	return ""
 }
 
+// extractBucket extracts the bucket name from an HTTP request, supporting both
+// path-style (/bucket/key) and virtual-host style (bucket.proxy.com/key) addressing.
+func extractBucket(r *http.Request) string {
+	// Remove port from host for analysis
+	hostWithoutPort := r.Host
+	if idx := strings.LastIndex(hostWithoutPort, ":"); idx != -1 {
+		// Check if the part after colon is all digits (a port number)
+		portPart := hostWithoutPort[idx+1:]
+		isPort := true
+		for _, c := range portPart {
+			if c < '0' || c > '9' {
+				isPort = false
+				break
+			}
+		}
+		if isPort {
+			hostWithoutPort = hostWithoutPort[:idx]
+		}
+	}
+
+	// Check for virtual-host style: bucket.domain.com
+	// Virtual-host style means the host has at least one dot and the first part
+	// before the dot is the bucket name
+	if strings.Contains(hostWithoutPort, ".") {
+		// Split into first part and the rest
+		parts := strings.SplitN(hostWithoutPort, ".", 2)
+		bucketCandidate := parts[0]
+		rest := parts[1]
+
+		// Check if this looks like virtual-host style
+		// Rules:
+		// 1. bucketCandidate must not be empty
+		// 2. bucketCandidate must not be all digits (could be IP octet)
+		// 3. rest must contain at least one dot (domain.tld) or be localhost
+		if bucketCandidate != "" && !isAllDigits(bucketCandidate) {
+			// Check if rest looks like a domain (contains dot) or is localhost
+			if strings.Contains(rest, ".") || rest == "localhost" {
+				return bucketCandidate
+			}
+		}
+	}
+
+	// Fall back to path-style extraction
+	return extractBucketFromPath(r.URL.Path)
+}
+
+// isAllDigits checks if a string contains only digits
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // writeS3Error writes an S3 XML error response
 func (p *ProxyHandler) writeS3Error(w http.ResponseWriter, code, message string, status int) {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(status)
 
-	errorXML := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<Error>
-	<Code>%s</Code>
-	<Message>%s</Message>
-	<RequestId>%s</RequestId>
-</Error>`, code, message, generateRequestID())
+	errorResp := S3ErrorResponse{
+		Code:      code,
+		Message:   message,
+		RequestId: generateRequestID(),
+	}
 
-	if _, err := w.Write([]byte(errorXML)); err != nil {
-		Logger.Error("failed to write error response", zap.Error(err), zap.String("code", code))
+	xmlHeader := []byte(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
+	if _, err := w.Write(xmlHeader); err != nil {
+		Logger.Error("failed to write XML header", zap.Error(err), zap.String("code", code))
+		return
+	}
+
+	encoder := xml.NewEncoder(w)
+	encoder.Indent("", "\t")
+	if err := encoder.Encode(errorResp); err != nil {
+		Logger.Error("failed to encode error response", zap.Error(err), zap.String("code", code))
 	}
 }
 

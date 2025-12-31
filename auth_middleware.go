@@ -157,12 +157,23 @@ func (a *AuthMiddleware) ValidateRequest(r *http.Request) (*User, error) {
 		// we validate basic auth (user exists, timestamp valid) and let the
 		// backend validate the actual chunk signatures.
 		//
-		// This is secure because:
+		// SECURITY WARNING: This approach has a security vulnerability:
+		// - An attacker with valid credentials can open a streaming upload connection
+		// - They can then send unlimited garbage data before the backend validates chunk signatures
+		// - This could exhaust bandwidth, backend processing resources, or storage
+		//
+		// Mitigation strategies:
+		// 1. Implement proper chunk signature validation in the proxy (complex)
+		// 2. Add rate limiting and size limits for streaming uploads
+		// 3. Use shorter timeouts for streaming connections
+		// 4. Monitor and alert on abnormal streaming upload patterns
+		//
+		// Current protections:
 		// - User must know valid credentials (checked above)
 		// - Timestamp prevents replay attacks (checked above)
 		// - Backend (Hetzner) will validate actual chunk integrity
 		// - Authorization for bucket access is checked in ServeHTTP
-		Logger.Debug("streaming chunked upload detected, delegating chunk validation to backend",
+		Logger.Warn("streaming chunked upload detected - SECURITY WARNING: chunk validation delegated to backend (resource exhaustion attack possible)",
 			zap.String("access_key", accessKey),
 			zap.String("path", r.URL.Path),
 		)

@@ -21,6 +21,7 @@ The proxy sits in front of an S3-compatible backend and:
 - ✅ **Structured Logging**: JSON logging via `uber-go/zap`
 - ✅ **Graceful Shutdown**: Handles SIGTERM/SIGINT with connection draining
 - ✅ **S3 Compatible**: Works with `aws-cli`, `rclone`, `s3cmd`, and all S3 SDKs
+- ✅ **Virtual-Host Style Support**: Modern AWS SDK compatibility with bucket-in-host addressing
 
 ## Architecture
 
@@ -103,7 +104,7 @@ _Note: Performance characteristics change when `verify_content_integrity: true` 
 
 ### Prerequisites
 
-- Go 1.25 or higher
+- Go 1.25.5 or higher
 - Access to Hetzner Object Storage (or any S3-compatible backend)
 
 ### Build from Source
@@ -133,7 +134,7 @@ master_credentials:
   access_key: "YOUR_HETZNER_ACCESS_KEY"
   secret_key: "YOUR_HETZNER_SECRET_KEY"
   endpoint: "https://fsn1.your-objectstorage.com"
-  region: "us-east-1"
+  region: "fsn1"  # Must match your Hetzner region
 
 # Proxy server settings
 server:
@@ -141,12 +142,18 @@ server:
   read_timeout: "300s"
   write_timeout: "300s"
   idle_timeout: "120s"
-  max_header_bytes: 1048576
+  max_header_bytes: 10048576  # 10MB for large multipart manifests
 
 # Security settings
 security:
-  verify_content_integrity: false # See "Content Integrity Verification" section
-  max_verify_body_size: 52428800
+  # Content integrity verification (performance vs. security trade-off)
+  verify_content_integrity: false  # Default: false for maximum performance
+  max_verify_body_size: 52428800   # 50MB max for integrity verification
+
+  # Streaming upload protection (prevents resource exhaustion attacks)
+  max_streaming_upload_size: 10737418240        # 10GB max per streaming upload
+  max_streaming_upload_duration: "1h"           # 1 hour max duration
+  max_concurrent_streaming_uploads: 5           # 5 concurrent streams per user
 
 # User database with RBAC
 users:
@@ -171,6 +178,13 @@ metrics:
   enabled: true
   address: ":9090"
   path: "/metrics"
+
+# Tracing (optional, for performance debugging)
+tracing:
+  enabled: false
+  exporter: "jaeger"  # "jaeger" or "stdout"
+  jaeger_endpoint: "http://localhost:14268/api/traces"
+  sampling_rate: 1.0  # 1.0 = 100% sampling
 ```
 
 ## Usage
@@ -216,7 +230,7 @@ region = us-east-1
 rclone ls s3proxy:bucket-alpha
 ```
 
-#### Go SDK (aws-sdk-go-v2)
+ #### Go SDK (aws-sdk-go-v2)
 
 ```go
 import (
@@ -237,6 +251,77 @@ client := s3.NewFromConfig(cfg, func(o *s3.Options) {
     o.UsePathStyle = true
 })
 ```
+
+### Virtual-Host Style Support
+
+The proxy supports both **path-style** and **virtual-host style** S3 addressing:
+
+#### Path-Style (Default)
+```
+http://proxy.example.com/bucket-name/object-key
+```
+
+#### Virtual-Host Style (Modern AWS SDKs)
+```
+http://bucket-name.proxy.example.com/object-key
+```
+
+#### How It Works
+
+1. **Detection**: The proxy checks the `Host` header first:
+   - If `Host` contains ≥3 domain parts (e.g., `bucket.proxy.com`), extracts bucket from first part
+   - Falls back to path-style extraction if virtual-host detection fails
+
+2. **Bucket Name Validation**: Virtual-host bucket names must:
+   - Be 3-63 characters long
+   - Contain only lowercase letters, numbers, dots, and hyphens
+   - Not start or end with hyphen or dot
+   - Not contain consecutive dots
+
+3. **Limitations**:
+   - **IP addresses**: Never treated as virtual-host style (e.g., `127.0.0.1` → path-style only)
+   - **Bucket names with dots**: Not supported in virtual-host style (parsing ambiguity)
+   - **Simple domains**: `example.com` (2 parts) → path-style only
+
+#### Configuration Examples
+
+##### AWS CLI with Virtual-Host Style
+```bash
+# Configure for virtual-host style
+aws configure set aws_access_key_id user1-key
+aws configure set aws_secret_access_key user1-secret
+aws configure set default.region us-east-1
+
+# Use virtual-host style addressing
+aws s3 ls s3://bucket-alpha \
+  --endpoint-url http://bucket-alpha.localhost:8080
+```
+
+##### AWS SDK with Virtual-Host Style
+```go
+client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+    // Use virtual-host style (default in modern AWS SDKs)
+    o.BaseEndpoint = aws.String("http://localhost:8080")
+    o.UsePathStyle = false // Default is false in AWS SDK v2
+})
+```
+
+##### Testing Both Styles
+```bash
+# Path-style (works with all bucket names)
+curl -H "Host: proxy.example.com" \
+  http://proxy.example.com/bucket-name/object-key
+
+# Virtual-host style (modern SDKs)
+curl -H "Host: bucket-name.proxy.example.com" \
+  http://bucket-name.proxy.example.com/object-key
+```
+
+#### Migration Considerations
+
+- **Existing deployments**: Continue using path-style (backward compatible)
+- **New deployments**: Can use virtual-host style for modern SDK compatibility
+- **Mixed environments**: Proxy handles both styles automatically
 
 ## Security Considerations
 
@@ -295,6 +380,10 @@ security:
 The following request types are **never** verified, even when `verify_content_integrity: true`:
 
 1. **Streaming uploads**: `STREAMING-AWS4-HMAC-SHA256-PAYLOAD` (uses chunk-level auth)
+   - **SECURITY NOTE**: The proxy implements protection against streaming upload attacks with configurable limits:
+     - `max_streaming_upload_size`: Maximum total size per streaming upload (default: 10GB)
+     - `max_streaming_upload_duration`: Maximum duration per streaming upload (default: 1 hour)
+     - `max_concurrent_streaming_uploads`: Maximum concurrent streams per user (default: 5)
 2. **Unsigned payloads**: Client explicitly sends `UNSIGNED-PAYLOAD`
 3. **Requests without body**: GET, HEAD, DELETE operations
 4. **Missing hash header**: No `X-Amz-Content-Sha256` provided
@@ -383,58 +472,7 @@ Proxy → Backend:
 4. **Monitor Logs**: Alert on authentication failures and hash mismatches
 5. **Least Privilege**: Grant users minimal bucket access needed
 
-## Deployment
-
-### Systemd Service
-
-#### Installation
-
-Use the provided installation script:
-
-```bash
-# Build the binary first
-go build -o s3-proxy .
-
-# Install systemd service (requires root)
-sudo ./install-systemd.sh
-```
-
-#### Service Files
-
-The installation creates:
-
-1. **Service file**: `/etc/systemd/system/s3-proxy.service`
-2. **Environment file**: `/etc/default/s3-proxy` (optional)
-3. **Configuration directory**: `/etc/s3-proxy/`
-4. **Log directory**: `/var/log/s3-proxy/`
-5. **Service user**: `s3proxy`
-
-#### Service Management
-
-```bash
-# Start service
-sudo systemctl start s3-proxy
-
-# Stop service
-sudo systemctl stop s3-proxy
-
-# Enable auto-start on boot
-sudo systemctl enable s3-proxy
-
-# Check status
-sudo systemctl status s3-proxy
-
-# View logs
-sudo journalctl -u s3-proxy -f
-
-# Reload configuration
-sudo systemctl reload s3-proxy
-
-# Restart service
-sudo systemctl restart s3-proxy
-```
-
-#### Security Features
+### Security Features
 
 The systemd service includes security hardening:
 
@@ -488,7 +526,30 @@ curl http://localhost:9090/metrics
 
 ### Kubernetes
 
-See `k8s/` directory for Deployment, Service, and ConfigMap manifests.
+See `k8s/` directory for Deployment and Secret manifests.
+
+**Note**: The provided deployment only exposes port 8080 (HTTP proxy). To expose metrics (port 9090), you need to:
+1. Add a second container port to the deployment
+2. Create a Service that exposes both ports
+3. Or use a separate Service for metrics
+
+Example Service addition:
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: s3-proxy
+spec:
+  selector:
+    app: s3-proxy
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+```
 
 ## Monitoring
 

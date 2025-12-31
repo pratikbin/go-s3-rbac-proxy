@@ -75,11 +75,10 @@ func TestIntegration_VirtualHostStyle_Limitation(t *testing.T) {
 		t.Logf("✅ Path-style addressing works correctly")
 	})
 
-	t.Run("VirtualHostStyle_NotSupported", func(t *testing.T) {
+	t.Run("VirtualHostStyle_NowSupported", func(t *testing.T) {
 		// Test: Request: GET /key with Host: bucket.proxy.com
-		// Current: extractBucketFromPath extracts "key" from path (first segment)
-		// Limitation: extractBucketFromPath doesn't check Host header
-		// Expected: Should return 403 or handle gracefully when bucket doesn't match Host
+		// With new extractBucket function: bucket extracted from Host header
+		// Expected: Bucket correctly extracted from Host header
 
 		// Create a request with virtual-host style (bucket in Host header)
 		req, err := http.NewRequestWithContext(ctx, "GET", proxyURL+"/virtual-host-key.txt", nil)
@@ -91,87 +90,98 @@ func TestIntegration_VirtualHostStyle_Limitation(t *testing.T) {
 		// Format: bucket.proxy.com
 		req.Host = "test-bucket." + strings.TrimPrefix(proxyURL, "http://")
 
-		// Verify extractBucketFromPath extracts from path (not Host)
-		// This demonstrates the limitation: it extracts "virtual-host-key.txt" as bucket
-		bucket := extractBucketFromPath(req.URL.Path)
-		expectedBucket := "virtual-host-key.txt"
+		// Verify extractBucket extracts from Host header (not path)
+		bucket := extractBucket(req)
+		expectedBucket := "test-bucket"
 		if bucket != expectedBucket {
-			t.Errorf("extractBucketFromPath extracts first path segment, expected: %s, got: %s", expectedBucket, bucket)
+			t.Errorf("extractBucket() = %q, want %q (should extract from Host header)", bucket, expectedBucket)
 		}
 
-		// In the actual proxy, this would result in:
-		// - extractBucketFromPath returns "virtual-host-key" (from path)
-		// - User authorization check would fail (user not authorized for "virtual-host-key" bucket)
-		// - Proxy returns 403 "Access Denied"
-		// This demonstrates that virtual-host style is not properly supported
-
-		t.Logf("✅ Virtual-host style limitation verified: extractBucketFromPath doesn't check Host header")
+		t.Logf("✅ Virtual-host style now supported: extractBucket correctly extracts bucket from Host header")
 	})
 
 	t.Run("ExtractBucket_EdgeCases", func(t *testing.T) {
-		// Test various path formats to verify extractBucketFromPath behavior
+		// Test various request formats to verify extractBucket behavior
 
 		tests := []struct {
 			name           string
+			host           string
 			path           string
 			expectedBucket string
 			description    string
 		}{
 			{
 				name:           "StandardPathStyle",
+				host:           strings.TrimPrefix(proxyURL, "http://"),
 				path:           "/bucket/key",
 				expectedBucket: "bucket",
 				description:    "Standard path-style format",
 			},
 			{
-				name:           "VirtualHostStylePath",
+				name:           "VirtualHostStyle",
+				host:           "bucket." + strings.TrimPrefix(proxyURL, "http://"),
 				path:           "/key",
-				expectedBucket: "key",
-				description:    "Virtual-host style path - extractBucketFromPath extracts first segment (limitation)",
+				expectedBucket: "bucket",
+				description:    "Virtual-host style - bucket extracted from Host",
 			},
 			{
 				name:           "RootPath",
+				host:           strings.TrimPrefix(proxyURL, "http://"),
 				path:           "/",
 				expectedBucket: "",
 				description:    "Root path (ListBuckets)",
 			},
 			{
 				name:           "OnlyBucket",
+				host:           strings.TrimPrefix(proxyURL, "http://"),
 				path:           "/bucket",
 				expectedBucket: "bucket",
 				description:    "Path with only bucket name",
+			},
+			{
+				name:           "VirtualHostWithPort",
+				host:           "bucket." + strings.TrimPrefix(proxyURL, "http://") + ":8080",
+				path:           "/key",
+				expectedBucket: "bucket",
+				description:    "Virtual-host style with port",
 			},
 		}
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				bucket := extractBucketFromPath(tt.path)
+				req, err := http.NewRequestWithContext(ctx, "GET", "http://"+tt.host+tt.path, nil)
+				if err != nil {
+					t.Fatalf("Failed to create request: %v", err)
+				}
+				req.Host = tt.host
+
+				bucket := extractBucket(req)
 				if bucket != tt.expectedBucket {
-					t.Errorf("extractBucketFromPath(%q) = %q, want %q (%s)",
-						tt.path, bucket, tt.expectedBucket, tt.description)
+					t.Errorf("extractBucket() with host=%q, path=%q = %q, want %q (%s)",
+						tt.host, tt.path, bucket, tt.expectedBucket, tt.description)
 				}
 			})
 		}
 
-		t.Logf("✅ extractBucketFromPath edge cases verified")
+		t.Logf("✅ extractBucket edge cases verified")
 	})
 
-	t.Run("Documentation_CurrentLimitation", func(t *testing.T) {
-		// Document the current limitation and potential enhancement
+	t.Run("Documentation_FeatureImplemented", func(t *testing.T) {
+		// Document that virtual-host style is now supported
 
 		t.Logf("Current Implementation:")
-		t.Logf("  - extractBucketFromPath only supports path-style (/bucket/key)")
-		t.Logf("  - No Host header parsing for virtual-host style (bucket.proxy.com/key)")
-		t.Logf("  - Virtual-host style requests result in empty bucket extraction")
-		t.Logf("  - Proxy returns 403 'Service-level operation not supported' for empty bucket")
+		t.Logf("  - extractBucket() supports both path-style (/bucket/key) and virtual-host style (bucket.proxy.com/key)")
+		t.Logf("  - Checks Host header first for virtual-host style")
+		t.Logf("  - Falls back to path-style extraction if no bucket in Host header")
+		t.Logf("  - Virtual-host style requests now correctly extract bucket from Host header")
 
-		t.Logf("\nPotential Enhancement:")
-		t.Logf("  - Add extractBucket(r *http.Request) string function")
-		t.Logf("  - Check Host header for subdomain: bucket.proxy.com -> 'bucket'")
-		t.Logf("  - Fall back to path-style if no subdomain detected")
-		t.Logf("  - This would enable virtual-host style support")
+		t.Logf("\nImplementation Details:")
+		t.Logf("  - extractBucket(r *http.Request) string function added")
+		t.Logf("  - Checks Host header for subdomain: bucket.proxy.com -> 'bucket'")
+		t.Logf("  - Falls back to path-style if no subdomain detected")
+		t.Logf("  - Validates bucket names according to S3 naming rules")
 
 		// This test serves as documentation
-		t.Logf("✅ Limitation documented")
+		t.Logf("✅ Virtual-host style support implemented")
 	})
 }

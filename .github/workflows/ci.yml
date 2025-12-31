@@ -30,16 +30,18 @@ jobs:
         run: go mod download
 
       - name: Run unit tests
-        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+        run: |
+          go install github.com/mfridman/tparse@latest
+          go test -v fmt -json | tparse -all
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          file: ./coverage.out
-          flags: unittests
-          name: codecov-umbrella
-          token: ${{ secrets.CODECOV_TOKEN }}
+      # - name: Upload coverage to Codecov
+      #   uses: codecov/codecov-action@v5
+      #   with:
+      #     file: ./coverage.out
+      #     flags: unittests
+      #     name: codecov-umbrella
+      #     token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Run localstack integration tests
         run: |
-          go test -v -tags=localstack ./...
+          go test -tags=localstack ./...

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -50,6 +51,23 @@ type SecurityConfig struct {
 	// Requests larger than this will fall back to UNSIGNED-PAYLOAD
 	// Set to 0 to disable size limit (dangerous - use with caution)
 	MaxVerifyBodySize int64 `yaml:"max_verify_body_size"`
+
+	// MaxStreamingUploadSize is the maximum total size (in bytes) for streaming/chunked uploads
+	// Default: 10737418240 (10GB) - prevents resource exhaustion attacks
+	// Streaming uploads exceeding this size will be terminated
+	// Set to 0 to disable size limit (dangerous - allows unlimited streaming)
+	MaxStreamingUploadSize int64 `yaml:"max_streaming_upload_size"`
+
+	// MaxStreamingUploadDuration is the maximum duration for streaming/chunked uploads
+	// Default: 3600 (1 hour) - prevents long-running streaming connections
+	// Streaming uploads exceeding this duration will be terminated
+	// Set to 0 to disable time limit (dangerous - allows infinite connections)
+	MaxStreamingUploadDuration string `yaml:"max_streaming_upload_duration"`
+
+	// MaxConcurrentStreamingUploads is the maximum number of concurrent streaming uploads per user
+	// Default: 5 - prevents connection exhaustion attacks
+	// Set to 0 to disable concurrency limit (dangerous - allows unlimited concurrent streams)
+	MaxConcurrentStreamingUploads int `yaml:"max_concurrent_streaming_uploads"`
 }
 
 // User represents a client user with RBAC permissions
@@ -116,6 +134,18 @@ func LoadConfig(path string) (*Config, error) {
 		// Default to 50MB to prevent OOM attacks
 		config.Security.MaxVerifyBodySize = 50 * 1024 * 1024 // 50MB
 	}
+	if config.Security.MaxStreamingUploadSize == 0 {
+		// Default to 10GB to prevent resource exhaustion attacks
+		config.Security.MaxStreamingUploadSize = 10 * 1024 * 1024 * 1024 // 10GB
+	}
+	if config.Security.MaxStreamingUploadDuration == "" {
+		// Default to 1 hour to prevent long-running connections
+		config.Security.MaxStreamingUploadDuration = "1h"
+	}
+	if config.Security.MaxConcurrentStreamingUploads == 0 {
+		// Default to 5 concurrent streaming uploads per user
+		config.Security.MaxConcurrentStreamingUploads = 5
+	}
 
 	// Validate logging config
 	if config.Logging.Level == "" {
@@ -163,8 +193,18 @@ func (s *ServerConfig) GetIdleTimeout() time.Duration {
 	return d
 }
 
-// IdentityStore manages user lookups
+// GetMaxStreamingUploadDuration parses and returns the max streaming upload duration
+func (s *SecurityConfig) GetMaxStreamingUploadDuration() time.Duration {
+	d, err := time.ParseDuration(s.MaxStreamingUploadDuration)
+	if err != nil {
+		return 3600 * time.Second // 1 hour default
+	}
+	return d
+}
+
+// IdentityStore manages user lookups with thread-safe operations
 type IdentityStore struct {
+	mu    sync.RWMutex
 	users map[string]*User // Map of access_key -> User
 }
 
@@ -181,10 +221,33 @@ func NewIdentityStore(users []User) *IdentityStore {
 	return store
 }
 
-// GetUser retrieves a user by access key
+// GetUser retrieves a user by access key (thread-safe)
 func (s *IdentityStore) GetUser(accessKey string) (*User, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	user, exists := s.users[accessKey]
 	return user, exists
+}
+
+// UpdateUsers atomically updates the user store with new users
+func (s *IdentityStore) UpdateUsers(users []User) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Create new map to avoid concurrent modification issues
+	newUsers := make(map[string]*User, len(users))
+	for i := range users {
+		newUsers[users[i].AccessKey] = &users[i]
+	}
+
+	s.users = newUsers
+}
+
+// GetUserCount returns the number of users in the store (thread-safe)
+func (s *IdentityStore) GetUserCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.users)
 }
 
 // IsAuthorized checks if a user is authorized to access a specific bucket

@@ -64,6 +64,17 @@ func main() {
 	// Create auth middleware
 	authMiddleware := NewAuthMiddleware(identityStore)
 
+	// Create configuration reloader
+	configReloader := NewConfigReloader(*configPath, identityStore, authMiddleware)
+	configReloader.Start()
+	defer configReloader.Stop()
+
+	// Optional: Start file watcher for automatic reloads (disabled by default)
+	// Uncomment to enable automatic file watching:
+	// ctx, cancel := context.WithCancel(context.Background())
+	// defer cancel()
+	// configReloader.WatchConfigFile(ctx, 30*time.Second)
+
 	// Create proxy handler
 	proxyHandler := NewProxyHandler(authMiddleware, config.MasterCredentials, config.Security)
 

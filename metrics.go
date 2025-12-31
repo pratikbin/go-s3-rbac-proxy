@@ -98,12 +98,13 @@ var (
 	bufferPoolRequestsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "s3_proxy_buffer_pool_requests_total",
-			Help: "Total number of buffer pool requests, labeled by action.",
+			Help: "Total number of buffer pool operations, labeled by action.",
 		},
 		[]string{"action"},
 	)
-	bufferPoolRequestsGet = bufferPoolRequestsTotal.WithLabelValues("get")
-	bufferPoolRequestsPut = bufferPoolRequestsTotal.WithLabelValues("put")
+	bufferPoolRequestsGet     = bufferPoolRequestsTotal.WithLabelValues("get")
+	bufferPoolRequestsPut     = bufferPoolRequestsTotal.WithLabelValues("put")
+	bufferPoolRequestsDiscard = bufferPoolRequestsTotal.WithLabelValues("discard")
 
 	requestMetricsQueue = make(chan requestMetricsEvent, metricsQueueSize)
 	dataTransferQueue   = make(chan dataTransferEvent, metricsQueueSize)
@@ -211,4 +212,8 @@ func recordBufferPoolGet() {
 
 func recordBufferPoolPut() {
 	bufferPoolRequestsPut.Inc()
+}
+
+func recordBufferPoolDiscard() {
+	bufferPoolRequestsDiscard.Inc()
 }
