@@ -30,38 +30,38 @@ func TestOOMProtection_SizeLimit(t *testing.T) {
 	}
 
 	tests := []struct {
-		name               string
-		bodySize           int
-		maxVerifyBodySize  int64
-		shouldVerify       bool
+		name                string
+		bodySize            int
+		maxVerifyBodySize   int64
+		shouldVerify        bool
 		expectedPayloadHash string
 	}{
 		{
-			name:               "small_body_verified",
-			bodySize:           1024, // 1KB
-			maxVerifyBodySize:  10 * 1024 * 1024, // 10MB
-			shouldVerify:       true,
+			name:                "small_body_verified",
+			bodySize:            1024,             // 1KB
+			maxVerifyBodySize:   10 * 1024 * 1024, // 10MB
+			shouldVerify:        true,
 			expectedPayloadHash: "", // Will be computed hash
 		},
 		{
-			name:               "body_at_limit_verified",
-			bodySize:           10 * 1024 * 1024, // 10MB
-			maxVerifyBodySize:  10 * 1024 * 1024, // 10MB
-			shouldVerify:       true,
+			name:                "body_at_limit_verified",
+			bodySize:            10 * 1024 * 1024, // 10MB
+			maxVerifyBodySize:   10 * 1024 * 1024, // 10MB
+			shouldVerify:        true,
 			expectedPayloadHash: "", // Will be computed hash
 		},
 		{
-			name:               "body_exceeds_limit_fallback",
-			bodySize:           10*1024*1024 + 1, // 10MB + 1 byte
-			maxVerifyBodySize:  10 * 1024 * 1024, // 10MB
-			shouldVerify:       false,
+			name:                "body_exceeds_limit_fallback",
+			bodySize:            10*1024*1024 + 1, // 10MB + 1 byte
+			maxVerifyBodySize:   10 * 1024 * 1024, // 10MB
+			shouldVerify:        false,
 			expectedPayloadHash: "UNSIGNED-PAYLOAD",
 		},
 		{
-			name:               "large_body_fallback",
-			bodySize:           100 * 1024 * 1024, // 100MB
-			maxVerifyBodySize:  50 * 1024 * 1024,  // 50MB default
-			shouldVerify:       false,
+			name:                "large_body_fallback",
+			bodySize:            100 * 1024 * 1024, // 100MB
+			maxVerifyBodySize:   50 * 1024 * 1024,  // 50MB default
+			shouldVerify:        false,
 			expectedPayloadHash: "UNSIGNED-PAYLOAD",
 		},
 	}

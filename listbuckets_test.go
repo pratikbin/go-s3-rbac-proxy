@@ -49,10 +49,10 @@ func TestListBucketsInterception(t *testing.T) {
 		expectEmptyBuckets bool
 	}{
 		{
-			name:            "limited_user_sees_only_allowed_buckets",
-			user:            &users[0],
-			expectedBuckets: []string{"bucket-a", "bucket-b"},
-			shouldContain:   []string{"<Name>bucket-a</Name>", "<Name>bucket-b</Name>"},
+			name:             "limited_user_sees_only_allowed_buckets",
+			user:             &users[0],
+			expectedBuckets:  []string{"bucket-a", "bucket-b"},
+			shouldContain:    []string{"<Name>bucket-a</Name>", "<Name>bucket-b</Name>"},
 			shouldNotContain: []string{"<Name>other-bucket</Name>"},
 		},
 		{
@@ -63,10 +63,10 @@ func TestListBucketsInterception(t *testing.T) {
 			shouldNotContain:   []string{"<Name>"},
 		},
 		{
-			name:            "single_bucket_user",
-			user:            &users[2],
-			expectedBuckets: []string{"only-one-bucket"},
-			shouldContain:   []string{"<Name>only-one-bucket</Name>"},
+			name:             "single_bucket_user",
+			user:             &users[2],
+			expectedBuckets:  []string{"only-one-bucket"},
+			shouldContain:    []string{"<Name>only-one-bucket</Name>"},
 			shouldNotContain: []string{"<Name>bucket-a</Name>", "<Name>bucket-b</Name>"},
 		},
 	}

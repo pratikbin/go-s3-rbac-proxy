@@ -267,8 +267,8 @@ func TestPresignedURL_ExpiryEdgeCases(t *testing.T) {
 	now := time.Now().UTC()
 	// IMPORTANT: Clock skew check happens BEFORE expiry check
 	// So dates must be within ±15 minutes for tests to reach expiry validation
-	validDate := now.Add(-5 * time.Minute).Format(iso8601BasicFormat)      // Within clock skew
-	expiredDate := now.Add(-10 * time.Minute).Format(iso8601BasicFormat)   // Within clock skew but will be expired
+	validDate := now.Add(-5 * time.Minute).Format(iso8601BasicFormat)    // Within clock skew
+	expiredDate := now.Add(-10 * time.Minute).Format(iso8601BasicFormat) // Within clock skew but will be expired
 
 	tests := []struct {
 		name         string

@@ -174,8 +174,19 @@ lint: ## Run golangci-lint
 
 test-go: ## Run Go unit tests
 	@echo "Running Go tests..."
-	@go test -v ./...
+	@go test ./...
 	@echo "✓ Tests complete"
+
+test-localstack: ## Run integration tests with LocalStack (using testcontainers-go)
+	@echo "Running LocalStack integration tests with testcontainers-go..."
+	@echo "Note: Tests will automatically start LocalStack containers via testcontainers-go"
+	@go test -v -tags=localstack ./...
+	@echo "✓ LocalStack tests complete"
+
+localstack-up: ## Start LocalStack manually via Docker Compose (for manual testing)
+	@echo "Starting LocalStack via Docker Compose..."
+	@docker compose up -d --wait
+	@echo "✓ LocalStack is running on http://localhost:4566"
 
 test-all: lint test-go test ## Run all tests (lint, unit tests, integration test)
 

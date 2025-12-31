@@ -187,11 +187,11 @@ func TestPresignedURL_ClockSkewVsExpiry(t *testing.T) {
 	auth := NewAuthMiddleware(store)
 
 	tests := []struct {
-		name             string
-		timeOffset       time.Duration
-		expirySeconds    int64
-		expectedError    string
-		checkOrder       string
+		name          string
+		timeOffset    time.Duration
+		expirySeconds int64
+		expectedError string
+		checkOrder    string
 	}{
 		{
 			name:          "clock_skew_checked_before_expiry",
@@ -204,14 +204,14 @@ func TestPresignedURL_ClockSkewVsExpiry(t *testing.T) {
 			name:          "within_clock_skew_but_expired",
 			timeOffset:    -5 * time.Minute, // Within clock skew
 			expirySeconds: 60,               // 1 minute (would be expired)
-			expectedError: "signature", // Will fail later on signature
+			expectedError: "signature",      // Will fail later on signature
 			checkOrder:    "Clock skew passes, then expiry check",
 		},
 		{
 			name:          "within_clock_skew_and_valid",
 			timeOffset:    -5 * time.Minute, // Within clock skew
 			expirySeconds: 3600,             // 1 hour (not expired)
-			expectedError: "signature", // Will fail on signature
+			expectedError: "signature",      // Will fail on signature
 			checkOrder:    "Both checks pass, fails on signature",
 		},
 	}

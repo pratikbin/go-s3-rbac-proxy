@@ -45,8 +45,8 @@ func TestRFCCompliantHopByHopHeaderFiltering(t *testing.T) {
 	}
 
 	tests := []struct {
-		name            string
-		headersToSend   map[string]string
+		name               string
+		headersToSend      map[string]string
 		shouldReachBackend []string // Headers that SHOULD pass through
 		shouldBeFiltered   []string // Hop-by-hop headers that should NOT reach backend
 	}{
@@ -71,11 +71,11 @@ func TestRFCCompliantHopByHopHeaderFiltering(t *testing.T) {
 		{
 			name: "s3_metadata_headers_pass_through",
 			headersToSend: map[string]string{
-				"X-Amz-Meta-Author":      "John Doe",
-				"X-Amz-Meta-Version":     "1.0",
-				"X-Amz-Storage-Class":    "GLACIER",
+				"X-Amz-Meta-Author":            "John Doe",
+				"X-Amz-Meta-Version":           "1.0",
+				"X-Amz-Storage-Class":          "GLACIER",
 				"X-Amz-Server-Side-Encryption": "AES256",
-				"X-Amz-Acl":              "bucket-owner-full-control",
+				"X-Amz-Acl":                    "bucket-owner-full-control",
 			},
 			shouldReachBackend: []string{
 				"X-Amz-Meta-Author",
@@ -111,8 +111,8 @@ func TestRFCCompliantHopByHopHeaderFiltering(t *testing.T) {
 		{
 			name: "connection_specific_headers_also_filtered",
 			headersToSend: map[string]string{
-				"Connection":      "X-Custom-Hop",
-				"X-Custom-Hop":    "should-be-filtered",
+				"Connection":       "X-Custom-Hop",
+				"X-Custom-Hop":     "should-be-filtered",
 				"X-Regular-Header": "should-pass-through",
 			},
 			shouldReachBackend: []string{
