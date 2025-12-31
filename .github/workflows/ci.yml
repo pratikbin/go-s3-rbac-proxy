@@ -32,7 +32,7 @@ jobs:
       - name: Run unit tests
         run: |
           go install github.com/mfridman/tparse@latest
-          go test -v fmt -json | tparse -all
+          go test ./... -json | tparse -all
 
       # - name: Upload coverage to Codecov
       #   uses: codecov/codecov-action@v5
@@ -44,4 +44,4 @@ jobs:
 
       - name: Run localstack integration tests
         run: |
-          go test -tags=localstack ./...
+          go test -tags=localstack ./... -json | tparse -all
