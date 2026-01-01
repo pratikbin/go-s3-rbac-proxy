@@ -21,11 +21,11 @@ func TestIntegration_DeleteObjects_Batch(t *testing.T) {
 		},
 	}
 
-	proxyURL, _, backend, cleanup := setupTestEnv(users)
+	proxyURL, _, backend, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := createS3Client(ctx, proxyURL, "user-delete", "secret-delete")
+	client, err := CreateS3Client(ctx, proxyURL, "user-delete", "secret-delete")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}
@@ -53,12 +53,12 @@ func TestIntegration_DeleteObjects_Batch(t *testing.T) {
 
 	// Verify Backend Interaction
 	// 1. Check if backend received the request
-	if backend.getCalls() == 0 {
+	if backend.GetCalls() == 0 {
 		t.Fatal("Backend was not called")
 	}
 
 	// 2. Check the body received by backend
-	lastBody := backend.getLastBody()
+	lastBody := backend.GetLastBody()
 	bodyStr := string(lastBody)
 
 	// It should contain the keys
@@ -75,7 +75,7 @@ func TestIntegration_DeleteObjects_Batch(t *testing.T) {
 
 	// EXTRA: Verify RBAC Deny on forbidden bucket
 	t.Run("ForbiddenBucket", func(t *testing.T) {
-		forbiddenClient, _ := createS3Client(ctx, proxyURL, "user-delete", "secret-delete")
+		forbiddenClient, _ := CreateS3Client(ctx, proxyURL, "user-delete", "secret-delete")
 		_, err := forbiddenClient.DeleteObjects(ctx, &s3.DeleteObjectsInput{
 			Bucket: aws.String("forbidden-bucket"),
 			Delete: &types.Delete{Objects: objects},

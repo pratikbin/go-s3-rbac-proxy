@@ -25,11 +25,11 @@ func TestIntegration_PathNormalization_EdgeCases(t *testing.T) {
 		},
 	}
 
-	proxyURL, _, backend, cleanup := setupTestEnv(users)
+	proxyURL, _, backend, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := createS3Client(ctx, proxyURL, "user-normalization", "secret-normalization")
+	client, err := CreateS3Client(ctx, proxyURL, "user-normalization", "secret-normalization")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}

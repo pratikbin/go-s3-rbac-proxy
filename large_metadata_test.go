@@ -25,11 +25,11 @@ func TestIntegration_LargeMetadata_8KBLimit(t *testing.T) {
 		},
 	}
 
-	proxyURL, _, backend, cleanup := setupTestEnv(users)
+	proxyURL, _, backend, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := createS3Client(ctx, proxyURL, "user-metadata", "secret-metadata")
+	client, err := CreateS3Client(ctx, proxyURL, "user-metadata", "secret-metadata")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestIntegration_LargeMetadata_8KBLimit(t *testing.T) {
 		}
 
 		// Verify backend received metadata headers
-		headers := backend.getLastHeaders()
+		headers := backend.GetLastHeaders()
 		metadataCount := 0
 		for headerName := range headers {
 			if strings.HasPrefix(strings.ToLower(headerName), "x-amz-meta-") {
@@ -169,7 +169,7 @@ func TestIntegration_LargeMetadata_8KBLimit(t *testing.T) {
 		}
 
 		// Verify backend received the request (signature was valid)
-		backendHeaders := backend.getLastHeaders()
+		backendHeaders := backend.GetLastHeaders()
 
 		// Check for metadata headers
 		foundMetadata := 0
@@ -216,7 +216,7 @@ func TestIntegration_LargeMetadata_8KBLimit(t *testing.T) {
 		}
 
 		// Verify backend received headers
-		headers := backend.getLastHeaders()
+		headers := backend.GetLastHeaders()
 		metadataCount := 0
 		for headerName := range headers {
 			if strings.HasPrefix(strings.ToLower(headerName), "x-amz-meta-") {

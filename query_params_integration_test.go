@@ -24,11 +24,11 @@ func TestIntegration_QueryParams_SubResources(t *testing.T) {
 		},
 	}
 
-	proxyURL, _, _, cleanup := setupTestEnv(users)
+	proxyURL, _, _, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := createS3Client(ctx, proxyURL, "user-query", "secret-query")
+	client, err := CreateS3Client(ctx, proxyURL, "user-query", "secret-query")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}

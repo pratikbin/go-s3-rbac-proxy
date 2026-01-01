@@ -27,11 +27,11 @@ func TestIntegration_HTTP100Continue_EarlyRejection(t *testing.T) {
 		},
 	}
 
-	proxyURL, _, backend, cleanup := setupTestEnv(users)
+	proxyURL, _, backend, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := createS3Client(ctx, proxyURL, "user-100continue", "secret-100continue")
+	client, err := CreateS3Client(ctx, proxyURL, "user-100continue", "secret-100continue")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestIntegration_HTTP100Continue_EarlyRejection(t *testing.T) {
 		}
 
 		// Verify backend received the data
-		backendData := backend.getLastBody()
+		backendData := backend.GetLastBody()
 		if !bytes.Equal(backendData, testData) {
 			t.Errorf("Backend data mismatch")
 		}
@@ -90,10 +90,10 @@ func TestIntegration_HTTP100Continue_EarlyRejection(t *testing.T) {
 			},
 		}
 
-		restrictedProxyURL, _, _, restrictedCleanup := setupTestEnv(restrictedUsers)
+		restrictedProxyURL, _, _, restrictedCleanup := SetupMockEnv(restrictedUsers)
 		defer restrictedCleanup()
 
-		restrictedClient, err := createS3Client(ctx, restrictedProxyURL, "user-restricted", "secret-restricted")
+		restrictedClient, err := CreateS3Client(ctx, restrictedProxyURL, "user-restricted", "secret-restricted")
 		if err != nil {
 			t.Fatalf("Failed to create restricted client: %v", err)
 		}

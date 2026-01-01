@@ -6,382 +6,19 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
-
-// S3 XML response structures
-type InitiateMultipartUploadResult struct {
-	XMLName  xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ InitiateMultipartUploadResult"`
-	Bucket   string   `xml:"Bucket"`
-	Key      string   `xml:"Key"`
-	UploadId string   `xml:"UploadId"`
-}
-
-type CompleteMultipartUploadResult struct {
-	XMLName  xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ CompleteMultipartUploadResult"`
-	Location string   `xml:"Location"`
-	Bucket   string   `xml:"Bucket"`
-	Key      string   `xml:"Key"`
-	ETag     string   `xml:"ETag"`
-}
-
-type DeleteResult struct {
-	XMLName xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ DeleteResult"`
-}
-
-type MockS3Response struct {
-	XMLName xml.Name `xml:"MockS3Response"`
-}
-
-// mockS3Backend simulates an S3 backend for integration testing
-type mockS3Backend struct {
-	calls       atomic.Int32
-	lastMethod  string
-	lastPath    string
-	lastBody    []byte
-	lastHeaders http.Header
-	storage     sync.Map // key (bucket/object) -> body
-	uploads     sync.Map // uploadId -> parts map
-	mu          sync.Mutex
-}
-
-// newMockS3Backend creates a new mock S3 backend
-func newMockS3Backend() *mockS3Backend {
-	return &mockS3Backend{
-		lastHeaders: make(http.Header),
-	}
-}
-
-// ServeHTTP handles HTTP requests to the mock backend
-func (m *mockS3Backend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	m.calls.Add(1)
-
-	m.mu.Lock()
-	m.lastMethod = r.Method
-	m.lastPath = r.URL.Path
-
-	// Clone headers for inspection
-	m.lastHeaders = r.Header.Clone()
-
-	// Read body if present
-	if r.Body != nil {
-		bodyBytes, _ := io.ReadAll(r.Body)
-		m.lastBody = bodyBytes
-		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-	}
-	m.mu.Unlock()
-
-	// Handle different S3 operations
-	query := r.URL.Query()
-
-	// CreateMultipartUpload
-	if r.Method == "POST" && query.Get("uploads") != "" {
-		m.handleCreateMultipartUpload(w, r)
-		return
-	}
-
-	// UploadPart
-	if r.Method == "PUT" && query.Get("uploadId") != "" && query.Get("partNumber") != "" {
-		m.handleUploadPart(w, r)
-		return
-	}
-
-	// CompleteMultipartUpload
-	if r.Method == "POST" && query.Get("uploadId") != "" {
-		m.handleCompleteMultipartUpload(w, r)
-		return
-	}
-
-	// DeleteObjects (Batch Delete)
-	if r.Method == "POST" && query.Has("delete") {
-		m.handleDeleteObjects(w, r)
-		return
-	}
-
-	// PutObject
-	if r.Method == "PUT" {
-		m.handlePutObject(w, r)
-		return
-	}
-
-	// GetObject
-	if r.Method == "GET" {
-		m.handleGetObject(w, r)
-		return
-	}
-
-	// Default response
-	w.Header().Set("ETag", `"mock-etag"`)
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(http.StatusOK)
-
-	// Write XML declaration and marshaled result
-	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>`))
-	if err := xml.NewEncoder(w).Encode(MockS3Response{}); err != nil {
-		http.Error(w, "Failed to encode XML response", http.StatusInternalServerError)
-	}
-}
-
-func (m *mockS3Backend) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Request) {
-	uploadID := fmt.Sprintf("test-upload-%d", time.Now().UnixNano())
-
-	// Store upload metadata
-	m.uploads.Store(uploadID, &sync.Map{})
-
-	// Extract key from path (remove bucket prefix)
-	key := strings.TrimPrefix(r.URL.Path, "/test-bucket/")
-
-	// Create XML response using proper marshaling
-	result := InitiateMultipartUploadResult{
-		Bucket:   "test-bucket",
-		Key:      key,
-		UploadId: uploadID,
-	}
-
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(http.StatusOK)
-
-	// Write XML declaration and marshaled result
-	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>`))
-	if err := xml.NewEncoder(w).Encode(result); err != nil {
-		http.Error(w, "Failed to encode XML response", http.StatusInternalServerError)
-	}
-}
-
-func (m *mockS3Backend) handleUploadPart(w http.ResponseWriter, r *http.Request) {
-	uploadID := r.URL.Query().Get("uploadId")
-	partNumber := r.URL.Query().Get("partNumber")
-
-	// Read part body
-	body, _ := io.ReadAll(r.Body)
-
-	// Store part
-	if partsVal, ok := m.uploads.Load(uploadID); ok {
-		parts := partsVal.(*sync.Map)
-		parts.Store(partNumber, body)
-	}
-
-	// Generate ETag from part content
-	hash := sha256.Sum256(body)
-	etag := fmt.Sprintf(`"part%s-%s"`, partNumber, hex.EncodeToString(hash[:8]))
-
-	w.Header().Set("ETag", etag)
-	w.WriteHeader(http.StatusOK)
-}
-
-func (m *mockS3Backend) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request) {
-	uploadID := r.URL.Query().Get("uploadId")
-
-	// Read the XML body with part list
-	body, _ := io.ReadAll(r.Body)
-	m.mu.Lock()
-	m.lastBody = body
-	m.mu.Unlock()
-
-	// Combine all parts
-	var combinedBody bytes.Buffer
-	if partsVal, ok := m.uploads.Load(uploadID); ok {
-		parts := partsVal.(*sync.Map)
-		// Simple iteration (parts should be combined in order in real implementation)
-		parts.Range(func(key, value interface{}) bool {
-			combinedBody.Write(value.([]byte))
-			return true
-		})
-	}
-
-	// Store combined object
-	m.storage.Store(r.URL.Path, combinedBody.Bytes())
-
-	// Extract key from path
-	key := strings.TrimPrefix(r.URL.Path, "/test-bucket/")
-
-	// Create XML response using proper marshaling
-	result := CompleteMultipartUploadResult{
-		Location: fmt.Sprintf("http://test-bucket.s3.amazonaws.com/%s", key),
-		Bucket:   "test-bucket",
-		Key:      key,
-		ETag:     `"multipart-complete-etag"`,
-	}
-
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(http.StatusOK)
-
-	// Write XML declaration and marshaled result
-	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>`))
-	if err := xml.NewEncoder(w).Encode(result); err != nil {
-		http.Error(w, "Failed to encode XML response", http.StatusInternalServerError)
-	}
-}
-
-func (m *mockS3Backend) handlePutObject(w http.ResponseWriter, r *http.Request) {
-	// Read body
-	body, _ := io.ReadAll(r.Body)
-
-	// Store object
-	m.storage.Store(r.URL.Path, body)
-
-	// Generate ETag
-	hash := sha256.Sum256(body)
-	etag := fmt.Sprintf(`"%s"`, hex.EncodeToString(hash[:]))
-
-	w.Header().Set("ETag", etag)
-	w.WriteHeader(http.StatusOK)
-}
-
-func (m *mockS3Backend) handleGetObject(w http.ResponseWriter, r *http.Request) {
-	// Retrieve stored object
-	if bodyVal, ok := m.storage.Load(r.URL.Path); ok {
-		body := bodyVal.([]byte)
-
-		// Check for Range header
-		rangeHeader := r.Header.Get("Range")
-		if rangeHeader != "" {
-			// Basic parsing for bytes=start-end
-			if strings.HasPrefix(rangeHeader, "bytes=") {
-				rangeSpec := strings.TrimPrefix(rangeHeader, "bytes=")
-				parts := strings.Split(rangeSpec, "-")
-				if len(parts) == 2 {
-					var start, end int
-					_, _ = fmt.Sscanf(parts[0], "%d", &start)
-					if parts[1] != "" {
-						_, _ = fmt.Sscanf(parts[1], "%d", &end)
-					} else {
-						end = len(body) - 1
-					}
-
-					// Bounds check
-					if start < 0 {
-						start = 0
-					}
-					if end >= len(body) {
-						end = len(body) - 1
-					}
-					if start <= end {
-						// Return partial content
-						partialBody := body[start : end+1]
-
-						// S3 keeps original ETag for the object.
-						fullHash := sha256.Sum256(body)
-						etag := fmt.Sprintf(`"%s"`, hex.EncodeToString(fullHash[:]))
-
-						w.Header().Set("ETag", etag)
-						w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(body)))
-						w.Header().Set("Content-Length", fmt.Sprintf("%d", len(partialBody)))
-						w.WriteHeader(http.StatusPartialContent)
-						_, _ = w.Write(partialBody)
-						return
-					}
-				}
-			}
-		}
-
-		// Generate ETag
-		hash := sha256.Sum256(body)
-		etag := fmt.Sprintf(`"%s"`, hex.EncodeToString(hash[:]))
-
-		w.Header().Set("ETag", etag)
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
-		return
-	}
-
-	// Object not found
-	w.WriteHeader(http.StatusNotFound)
-	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
-<Error>
-	<Code>NoSuchKey</Code>
-	<Message>The specified key does not exist.</Message>
-</Error>`))
-}
-
-func (m *mockS3Backend) getCalls() int32 {
-	return m.calls.Load()
-}
-
-func (m *mockS3Backend) getLastHeaders() http.Header {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.lastHeaders.Clone()
-}
-
-func (m *mockS3Backend) getLastBody() []byte {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]byte(nil), m.lastBody...)
-}
-
-// setupTestEnv creates a complete test environment with mock backend and proxy
-func setupTestEnv(users []User) (proxyURL string, backendURL string, backend *mockS3Backend, cleanup func()) {
-	// Create mock S3 backend
-	backend = newMockS3Backend()
-	backendServer := httptest.NewServer(backend)
-
-	// Create identity store and auth middleware
-	store := NewIdentityStore(users)
-	auth := NewAuthMiddleware(store)
-
-	// Create master credentials pointing to mock backend
-	masterCreds := MasterCredentials{
-		AccessKey: "master-access-key",
-		SecretKey: "master-secret-key",
-		Endpoint:  backendServer.URL,
-		Region:    "us-east-1",
-	}
-
-	// Create security config
-	securityConfig := SecurityConfig{
-		VerifyContentIntegrity: false, // Use UNSIGNED-PAYLOAD for streaming
-		MaxVerifyBodySize:      50 * 1024 * 1024,
-	}
-
-	// Create proxy handler
-	proxyHandler := NewProxyHandler(auth, masterCreds, securityConfig)
-	proxyServer := httptest.NewServer(proxyHandler)
-
-	cleanup = func() {
-		proxyServer.Close()
-		backendServer.Close()
-	}
-
-	return proxyServer.URL, backendServer.URL, backend, cleanup
-}
-
-// createS3Client creates an AWS SDK v2 S3 client configured for the test proxy
-func createS3Client(ctx context.Context, proxyURL, accessKey, secretKey string) (*s3.Client, error) {
-	// Load config with static credentials
-	cfg, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion("us-east-1"),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create S3 client with custom endpoint and path-style addressing
-	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(proxyURL)
-		o.UsePathStyle = true
-	})
-
-	return client, nil
-}
 
 // TestIntegration_ListBuckets_RBAC verifies service-level RBAC for ListBuckets operation
 func TestIntegration_ListBuckets_RBAC(t *testing.T) {
@@ -399,24 +36,24 @@ func TestIntegration_ListBuckets_RBAC(t *testing.T) {
 			},
 		}
 
-		proxyURL, _, backend, cleanup := setupTestEnv(users)
+		proxyURL, _, backend, cleanup := SetupMockEnv(users)
 		defer cleanup()
 
 		ctx := context.Background()
-		client, err := createS3Client(ctx, proxyURL, "user-bucket-a", "secret-a")
+		client, err := CreateS3Client(ctx, proxyURL, "user-bucket-a", "secret-a")
 		if err != nil {
 			t.Fatalf("Failed to create S3 client: %v", err)
 		}
 
 		// Call ListBuckets
-		initialCalls := backend.getCalls()
+		initialCalls := backend.GetCalls()
 		result, err := client.ListBuckets(ctx, &s3.ListBucketsInput{})
 		if err != nil {
 			t.Fatalf("ListBuckets failed: %v", err)
 		}
 
 		// Verify NO backend call was made (proxy intercepts)
-		if backend.getCalls() != initialCalls {
+		if backend.GetCalls() != initialCalls {
 			t.Errorf("Expected proxy to intercept ListBuckets, but backend was called")
 		}
 
@@ -447,24 +84,24 @@ func TestIntegration_ListBuckets_RBAC(t *testing.T) {
 			},
 		}
 
-		proxyURL, _, backend, cleanup := setupTestEnv(users)
+		proxyURL, _, backend, cleanup := SetupMockEnv(users)
 		defer cleanup()
 
 		ctx := context.Background()
-		client, err := createS3Client(ctx, proxyURL, "user-wildcard", "secret-wildcard")
+		client, err := CreateS3Client(ctx, proxyURL, "user-wildcard", "secret-wildcard")
 		if err != nil {
 			t.Fatalf("Failed to create S3 client: %v", err)
 		}
 
 		// Call ListBuckets
-		initialCalls := backend.getCalls()
+		initialCalls := backend.GetCalls()
 		result, err := client.ListBuckets(ctx, &s3.ListBucketsInput{})
 		if err != nil {
 			t.Fatalf("ListBuckets failed: %v", err)
 		}
 
 		// Verify NO backend call was made
-		if backend.getCalls() != initialCalls {
+		if backend.GetCalls() != initialCalls {
 			t.Errorf("Expected proxy to intercept ListBuckets, but backend was called")
 		}
 
@@ -493,13 +130,13 @@ func TestIntegration_ListBuckets_RBAC(t *testing.T) {
 			},
 		}
 
-		proxyURL, _, _, cleanup := setupTestEnv(users)
+		proxyURL, _, _, cleanup := SetupMockEnv(users)
 		defer cleanup()
 
 		ctx := context.Background()
 
 		// Test user-bucket-x
-		clientX, _ := createS3Client(ctx, proxyURL, "user-bucket-x", "secret-x")
+		clientX, _ := CreateS3Client(ctx, proxyURL, "user-bucket-x", "secret-x")
 		resultX, err := clientX.ListBuckets(ctx, &s3.ListBucketsInput{})
 		if err != nil {
 			t.Fatalf("ListBuckets failed for user-bucket-x: %v", err)
@@ -509,7 +146,7 @@ func TestIntegration_ListBuckets_RBAC(t *testing.T) {
 		}
 
 		// Test user-bucket-y
-		clientY, _ := createS3Client(ctx, proxyURL, "user-bucket-y", "secret-y")
+		clientY, _ := CreateS3Client(ctx, proxyURL, "user-bucket-y", "secret-y")
 		resultY, err := clientY.ListBuckets(ctx, &s3.ListBucketsInput{})
 		if err != nil {
 			t.Fatalf("ListBuckets failed for user-bucket-y: %v", err)
@@ -535,11 +172,11 @@ func TestIntegration_AccessDenied_CrossBucket(t *testing.T) {
 		},
 	}
 
-	proxyURL, _, _, cleanup := setupTestEnv(users)
+	proxyURL, _, _, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := createS3Client(ctx, proxyURL, "user-restricted", "secret-restricted")
+	client, err := CreateS3Client(ctx, proxyURL, "user-restricted", "secret-restricted")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}
@@ -650,11 +287,11 @@ func TestIntegration_DataIntegrity_Streaming(t *testing.T) {
 		},
 	}
 
-	proxyURL, _, backend, cleanup := setupTestEnv(users)
+	proxyURL, _, backend, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := createS3Client(ctx, proxyURL, "user-streaming", "secret-streaming")
+	client, err := CreateS3Client(ctx, proxyURL, "user-streaming", "secret-streaming")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}
@@ -715,7 +352,7 @@ func TestIntegration_DataIntegrity_Streaming(t *testing.T) {
 			}
 
 			// Verify backend received exact data
-			backendData := backend.getLastBody()
+			backendData := backend.GetLastBody()
 			if !bytes.Equal(backendData, originalData) {
 				t.Errorf("Backend data mismatch: expected %d bytes, got %d bytes",
 					len(originalData), len(backendData))
@@ -786,11 +423,11 @@ func TestIntegration_URIEncoding_SpecialChars(t *testing.T) {
 		},
 	}
 
-	proxyURL, _, backend, cleanup := setupTestEnv(users)
+	proxyURL, _, backend, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := createS3Client(ctx, proxyURL, "user-encoding", "secret-encoding")
+	client, err := CreateS3Client(ctx, proxyURL, "user-encoding", "secret-encoding")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}
@@ -897,11 +534,11 @@ func TestIntegration_MultipartUpload_Complete(t *testing.T) {
 		},
 	}
 
-	proxyURL, _, backend, cleanup := setupTestEnv(users)
+	proxyURL, _, backend, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := createS3Client(ctx, proxyURL, "user-multipart", "secret-multipart")
+	client, err := CreateS3Client(ctx, proxyURL, "user-multipart", "secret-multipart")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}
@@ -921,7 +558,7 @@ func TestIntegration_MultipartUpload_Complete(t *testing.T) {
 	uploadID := aws.ToString(createResp.UploadId)
 	if uploadID == "" {
 		// Debug: Check what the backend sent
-		lastBody := backend.getLastBody()
+		lastBody := backend.GetLastBody()
 		t.Logf("Backend response body: %s", string(lastBody))
 		t.Fatalf("UploadId is empty. Response: %+v", createResp)
 	}
@@ -983,7 +620,7 @@ func TestIntegration_MultipartUpload_Complete(t *testing.T) {
 	t.Logf("✅ CompleteMultipartUpload successful")
 
 	// Step 4: Verify the XML body was forwarded to backend
-	lastBody := backend.getLastBody()
+	lastBody := backend.GetLastBody()
 	if len(lastBody) == 0 {
 		t.Error("Backend did not receive CompleteMultipartUpload XML body")
 	} else {
@@ -1025,7 +662,7 @@ func TestIntegration_MultipartUpload_Complete(t *testing.T) {
 	}
 
 	// Verify query parameters were handled correctly
-	lastHeaders := backend.getLastHeaders()
+	lastHeaders := backend.GetLastHeaders()
 	authHeader := lastHeaders.Get("Authorization")
 	if authHeader == "" {
 		t.Error("Backend request missing Authorization header")
@@ -1047,7 +684,7 @@ func TestIntegration_Security_SignatureTampering(t *testing.T) {
 		},
 	}
 
-	proxyURL, _, _, cleanup := setupTestEnv(users)
+	proxyURL, _, _, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -1100,7 +737,7 @@ func TestIntegration_Security_SignatureTampering(t *testing.T) {
 
 	t.Run("InvalidAccessKey_Rejected", func(t *testing.T) {
 		// Try to use non-existent access key
-		invalidClient, err := createS3Client(ctx, proxyURL, "invalid-access-key", "invalid-secret")
+		invalidClient, err := CreateS3Client(ctx, proxyURL, "invalid-access-key", "invalid-secret")
 		if err != nil {
 			t.Fatalf("Failed to create client: %v", err)
 		}
@@ -1131,11 +768,11 @@ func TestIntegration_Security_PresignedURL(t *testing.T) {
 		},
 	}
 
-	proxyURL, _, backend, cleanup := setupTestEnv(users)
+	proxyURL, _, backend, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := createS3Client(ctx, proxyURL, "user-presigned", "secret-presigned")
+	client, err := CreateS3Client(ctx, proxyURL, "user-presigned", "secret-presigned")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}
@@ -1205,7 +842,7 @@ func TestIntegration_Security_PresignedURL(t *testing.T) {
 		time.Sleep(2 * time.Second)
 
 		// Try to use expired URL
-		initialCalls := backend.getCalls()
+		initialCalls := backend.GetCalls()
 		resp, err := http.Get(presignedReq.URL)
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
@@ -1226,7 +863,7 @@ func TestIntegration_Security_PresignedURL(t *testing.T) {
 		}
 
 		// Verify backend wasn't called (auth middleware should reject)
-		if backend.getCalls() > initialCalls {
+		if backend.GetCalls() > initialCalls {
 			t.Logf("Note: Backend was called - proxy may be delegating expiry check")
 		}
 
@@ -1247,11 +884,11 @@ func TestIntegration_Concurrency_SigningKeyCache(t *testing.T) {
 		},
 	}
 
-	proxyURL, _, backend, cleanup := setupTestEnv(users)
+	proxyURL, _, backend, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := createS3Client(ctx, proxyURL, "user-concurrent", "secret-concurrent")
+	client, err := CreateS3Client(ctx, proxyURL, "user-concurrent", "secret-concurrent")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}
@@ -1319,7 +956,7 @@ func TestIntegration_Concurrency_SigningKeyCache(t *testing.T) {
 	}
 
 	// Verify all requests reached backend
-	backendCalls := backend.getCalls()
+	backendCalls := backend.GetCalls()
 	if backendCalls != int32(totalRequests) {
 		t.Logf("Note: Backend received %d calls out of %d requests (some may have been rejected by auth)",
 			backendCalls, totalRequests)
@@ -1353,11 +990,11 @@ func TestIntegration_Concurrency_SameDateStamp(t *testing.T) {
 		},
 	}
 
-	proxyURL, _, _, cleanup := setupTestEnv(users)
+	proxyURL, _, _, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := createS3Client(ctx, proxyURL, "user-date-cache", "secret-date-cache")
+	client, err := CreateS3Client(ctx, proxyURL, "user-date-cache", "secret-date-cache")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}
@@ -1432,11 +1069,11 @@ func TestIntegration_Headers_CustomMetadata(t *testing.T) {
 		},
 	}
 
-	proxyURL, _, backend, cleanup := setupTestEnv(users)
+	proxyURL, _, backend, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := createS3Client(ctx, proxyURL, "user-headers", "secret-headers")
+	client, err := CreateS3Client(ctx, proxyURL, "user-headers", "secret-headers")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}
@@ -1457,7 +1094,7 @@ func TestIntegration_Headers_CustomMetadata(t *testing.T) {
 		}
 
 		// Verify backend received metadata headers
-		headers := backend.getLastHeaders()
+		headers := backend.GetLastHeaders()
 
 		// AWS SDK adds "X-Amz-Meta-" prefix to metadata keys
 		metaCustom := headers.Get("X-Amz-Meta-Custom-Key")
@@ -1489,7 +1126,7 @@ func TestIntegration_Headers_CustomMetadata(t *testing.T) {
 		}
 
 		// Verify backend received metadata
-		headers := backend.getLastHeaders()
+		headers := backend.GetLastHeaders()
 
 		// Check for metadata headers (case may vary)
 		foundUppercase := false
@@ -1531,7 +1168,7 @@ func TestIntegration_Headers_CustomMetadata(t *testing.T) {
 		}
 
 		// Verify backend received standard headers
-		headers := backend.getLastHeaders()
+		headers := backend.GetLastHeaders()
 
 		contentType := headers.Get("Content-Type")
 		cacheControl := headers.Get("Cache-Control")
@@ -1557,7 +1194,7 @@ func TestIntegration_Headers_CustomMetadata(t *testing.T) {
 			t.Fatalf("PutObject failed: %v", err)
 		}
 
-		headers := backend.getLastHeaders()
+		headers := backend.GetLastHeaders()
 
 		// Check for required AWS headers
 		authHeader := headers.Get("Authorization")
@@ -1596,7 +1233,7 @@ func TestIntegration_ChunkedTransfer_NoContentLength(t *testing.T) {
 		},
 	}
 
-	proxyURL, _, backend, cleanup := setupTestEnv(users)
+	proxyURL, _, backend, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -1607,7 +1244,7 @@ func TestIntegration_ChunkedTransfer_NoContentLength(t *testing.T) {
 
 		// We need to create a properly signed request manually
 		// For simplicity, we'll use the SDK client but with a streaming body
-		client, err := createS3Client(ctx, proxyURL, "user-chunked", "secret-chunked")
+		client, err := CreateS3Client(ctx, proxyURL, "user-chunked", "secret-chunked")
 		if err != nil {
 			t.Fatalf("Failed to create S3 client: %v", err)
 		}
@@ -1626,13 +1263,13 @@ func TestIntegration_ChunkedTransfer_NoContentLength(t *testing.T) {
 		}
 
 		// Verify backend received the data
-		backendBody := backend.getLastBody()
+		backendBody := backend.GetLastBody()
 		if !bytes.Equal(backendBody, testData) {
 			t.Errorf("Backend data mismatch:\nExpected: %s\nGot: %s", testData, backendBody)
 		}
 
 		// Verify UNSIGNED-PAYLOAD was used (streaming mode)
-		headers := backend.getLastHeaders()
+		headers := backend.GetLastHeaders()
 		contentHash := headers.Get("X-Amz-Content-Sha256")
 		if contentHash != "UNSIGNED-PAYLOAD" {
 			t.Logf("Note: Content hash is %s (may use UNSIGNED-PAYLOAD for streaming)", contentHash)
@@ -1643,7 +1280,7 @@ func TestIntegration_ChunkedTransfer_NoContentLength(t *testing.T) {
 
 	t.Run("LargeStream_NoBuffer", func(t *testing.T) {
 		// Test with larger streaming data to verify no buffering
-		client, err := createS3Client(ctx, proxyURL, "user-chunked", "secret-chunked")
+		client, err := CreateS3Client(ctx, proxyURL, "user-chunked", "secret-chunked")
 		if err != nil {
 			t.Fatalf("Failed to create S3 client: %v", err)
 		}
@@ -1684,7 +1321,7 @@ func TestIntegration_ChunkedTransfer_NoContentLength(t *testing.T) {
 		}
 
 		// Verify data integrity
-		backendBody := backend.getLastBody()
+		backendBody := backend.GetLastBody()
 		if len(backendBody) != streamSize {
 			t.Errorf("Size mismatch: expected %d bytes, got %d bytes", streamSize, len(backendBody))
 		}

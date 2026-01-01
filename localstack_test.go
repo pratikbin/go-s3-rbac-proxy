@@ -9,155 +9,21 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/localstack"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 // localstackTestRegion is the region used for LocalStack tests
 const localstackTestRegion = "us-east-1"
 
-// testUser represents a test user configuration
-type testUser struct {
-	AccessKey      string
-	SecretKey      string
-	AllowedBuckets []string
-}
-
-// testEnv holds the test environment resources
-type testEnv struct {
-	ProxyURL    string
-	BackendURL  string
-	Cleanup     func()
-	Container   *localstack.LocalStackContainer
-	ProxyServer *httptest.Server
-}
-
-// setupLocalStackEnv starts a LocalStack container and creates a proxy handler pointing to it.
-// It returns the test environment with cleanup function.
-func setupLocalStackEnv(ctx context.Context, users []testUser) (*testEnv, error) {
-	// 1. Start LocalStack Container with health check
-	lsContainer, err := localstack.RunContainer(ctx,
-		testcontainers.WithImage("localstack/localstack:latest"),
-		testcontainers.WithEnv(map[string]string{
-			"SERVICES": "s3",
-		}),
-		testcontainers.WithWaitStrategy(
-			wait.ForHTTP("/_localstack/health").
-				WithPort("4566/tcp").
-				WithStatusCodeMatcher(func(status int) bool {
-					return status == http.StatusOK
-				}).
-				WithStartupTimeout(120*time.Second),
-		),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start localstack container: %w", err)
-	}
-
-	// 2. Get dynamic endpoint
-	backendEndpoint, err := lsContainer.PortEndpoint(ctx, "4566/tcp", "http")
-	if err != nil {
-		lsContainer.Terminate(ctx)
-		return nil, fmt.Errorf("failed to get localstack endpoint: %w", err)
-	}
-
-	// 3. Convert test users to User structs
-	var userList []User
-	for _, u := range users {
-		userList = append(userList, User{
-			AccessKey:      u.AccessKey,
-			SecretKey:      u.SecretKey,
-			AllowedBuckets: u.AllowedBuckets,
-		})
-	}
-
-	// 4. Configure Proxy
-	masterCreds := MasterCredentials{
-		AccessKey: "test", // Default LocalStack creds
-		SecretKey: "test",
-		Endpoint:  backendEndpoint,
-		Region:    localstackTestRegion,
-	}
-
-	securityConfig := SecurityConfig{
-		VerifyContentIntegrity: false,
-		MaxVerifyBodySize:      50 * 1024 * 1024,
-	}
-
-	identityStore := NewIdentityStore(userList)
-	auth := NewAuthMiddleware(identityStore)
-	proxyHandler := NewProxyHandler(auth, masterCreds, securityConfig)
-	proxyServer := httptest.NewServer(proxyHandler)
-
-	// 5. Create test environment
-	env := &testEnv{
-		ProxyURL:    proxyServer.URL,
-		BackendURL:  backendEndpoint,
-		Container:   lsContainer,
-		ProxyServer: proxyServer,
-	}
-
-	// 6. Setup cleanup
-	env.Cleanup = func() {
-		proxyServer.Close()
-		if err := lsContainer.Terminate(ctx); err != nil {
-			// Log but don't fail test on cleanup errors
-			fmt.Printf("warning: failed to terminate container: %v\n", err)
-		}
-	}
-
-	return env, nil
-}
-
-// createProxyS3Client creates an AWS SDK v2 S3 client configured for the test PROXY.
-func createProxyS3Client(ctx context.Context, proxyURL, accessKey, secretKey string) (*s3.Client, error) {
-	cfg, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion(localstackTestRegion),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load AWS config: %w", err)
-	}
-
-	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(proxyURL)
-		o.UsePathStyle = true
-	})
-
-	return client, nil
-}
-
-// createBackendS3Client creates an AWS SDK v2 S3 client that talks DIRECTLY to LocalStack.
-func createBackendS3Client(ctx context.Context, endpoint string) (*s3.Client, error) {
-	cfg, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion(localstackTestRegion),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load AWS config: %w", err)
-	}
-
-	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(endpoint)
-		o.UsePathStyle = true
-	})
-	return client, nil
-}
-
 // ensureBucket creates a bucket in the specific LocalStack instance with retry logic.
 func ensureBucket(ctx context.Context, endpoint, bucket string) error {
-	client, err := createBackendS3Client(ctx, endpoint)
+	client, err := CreateBackendS3Client(ctx, endpoint)
 	if err != nil {
 		return fmt.Errorf("failed to create backend client: %w", err)
 	}
@@ -186,7 +52,7 @@ func ensureBucket(ctx context.Context, endpoint, bucket string) error {
 
 // cleanupBucket deletes all objects and the bucket itself.
 func cleanupBucket(ctx context.Context, endpoint, bucket string) error {
-	client, err := createBackendS3Client(ctx, endpoint)
+	client, err := CreateBackendS3Client(ctx, endpoint)
 	if err != nil {
 		return fmt.Errorf("failed to create backend client: %w", err)
 	}
@@ -223,7 +89,7 @@ func cleanupBucket(ctx context.Context, endpoint, bucket string) error {
 // TestLocalStack_BasicCRUD verifies basic object operations through the proxy.
 func TestLocalStack_BasicCRUD(t *testing.T) {
 	ctx := context.Background()
-	users := []testUser{
+	users := []TestUser{
 		{
 			AccessKey:      "test-user",
 			SecretKey:      "test-secret",
@@ -232,7 +98,7 @@ func TestLocalStack_BasicCRUD(t *testing.T) {
 	}
 
 	// Setup environment (starts container)
-	env, err := setupLocalStackEnv(ctx, users)
+	env, err := SetupLocalStackEnv(ctx, users)
 	if err != nil {
 		t.Fatalf("Failed to setup LocalStack env: %v", err)
 	}
@@ -244,7 +110,7 @@ func TestLocalStack_BasicCRUD(t *testing.T) {
 	}
 	defer cleanupBucket(ctx, env.BackendURL, "test-bucket")
 
-	client, err := createProxyS3Client(ctx, env.ProxyURL, "test-user", "test-secret")
+	client, err := CreateProxyS3Client(ctx, env.ProxyURL, "test-user", "test-secret")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}
@@ -312,7 +178,7 @@ func TestLocalStack_BasicCRUD(t *testing.T) {
 // TestLocalStack_MultipartUpload performs a complete multipart upload.
 func TestLocalStack_MultipartUpload(t *testing.T) {
 	ctx := context.Background()
-	users := []testUser{
+	users := []TestUser{
 		{
 			AccessKey:      "test-user",
 			SecretKey:      "test-secret",
@@ -320,7 +186,7 @@ func TestLocalStack_MultipartUpload(t *testing.T) {
 		},
 	}
 
-	env, err := setupLocalStackEnv(ctx, users)
+	env, err := SetupLocalStackEnv(ctx, users)
 	if err != nil {
 		t.Fatalf("Failed to setup LocalStack env: %v", err)
 	}
@@ -332,7 +198,7 @@ func TestLocalStack_MultipartUpload(t *testing.T) {
 	}
 	defer cleanupBucket(ctx, env.BackendURL, "multipart-bucket")
 
-	client, err := createProxyS3Client(ctx, env.ProxyURL, "test-user", "test-secret")
+	client, err := CreateProxyS3Client(ctx, env.ProxyURL, "test-user", "test-secret")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}
@@ -432,7 +298,7 @@ func TestLocalStack_MultipartUpload(t *testing.T) {
 func TestLocalStack_ListBuckets_RBAC(t *testing.T) {
 	ctx := context.Background()
 
-	users := []testUser{
+	users := []TestUser{
 		{
 			AccessKey:      "user-a",
 			SecretKey:      "secret-a",
@@ -440,7 +306,7 @@ func TestLocalStack_ListBuckets_RBAC(t *testing.T) {
 		},
 	}
 
-	env, err := setupLocalStackEnv(ctx, users)
+	env, err := SetupLocalStackEnv(ctx, users)
 	if err != nil {
 		t.Fatalf("Failed to setup LocalStack env: %v", err)
 	}
@@ -455,7 +321,7 @@ func TestLocalStack_ListBuckets_RBAC(t *testing.T) {
 		defer cleanupBucket(ctx, env.BackendURL, b)
 	}
 
-	client, err := createProxyS3Client(ctx, env.ProxyURL, "user-a", "secret-a")
+	client, err := CreateProxyS3Client(ctx, env.ProxyURL, "user-a", "secret-a")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}
@@ -478,7 +344,7 @@ func TestLocalStack_ListBuckets_RBAC(t *testing.T) {
 // TestLocalStack_PresignedURL verifies presigned URL generation and usage.
 func TestLocalStack_PresignedURL(t *testing.T) {
 	ctx := context.Background()
-	users := []testUser{
+	users := []TestUser{
 		{
 			AccessKey:      "presign-user",
 			SecretKey:      "presign-secret",
@@ -486,7 +352,7 @@ func TestLocalStack_PresignedURL(t *testing.T) {
 		},
 	}
 
-	env, err := setupLocalStackEnv(ctx, users)
+	env, err := SetupLocalStackEnv(ctx, users)
 	if err != nil {
 		t.Fatalf("Failed to setup LocalStack env: %v", err)
 	}
@@ -497,7 +363,7 @@ func TestLocalStack_PresignedURL(t *testing.T) {
 	}
 	defer cleanupBucket(ctx, env.BackendURL, "presign-bucket")
 
-	client, err := createProxyS3Client(ctx, env.ProxyURL, "presign-user", "presign-secret")
+	client, err := CreateProxyS3Client(ctx, env.ProxyURL, "presign-user", "presign-secret")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}
@@ -583,7 +449,7 @@ func TestLocalStack_PresignedURL(t *testing.T) {
 // TestLocalStack_ErrorPassthrough ensures backend errors (404, 403) are relayed.
 func TestLocalStack_ErrorPassthrough(t *testing.T) {
 	ctx := context.Background()
-	users := []testUser{
+	users := []TestUser{
 		{
 			AccessKey:      "error-user",
 			SecretKey:      "error-secret",
@@ -591,7 +457,7 @@ func TestLocalStack_ErrorPassthrough(t *testing.T) {
 		},
 	}
 
-	env, err := setupLocalStackEnv(ctx, users)
+	env, err := SetupLocalStackEnv(ctx, users)
 	if err != nil {
 		t.Fatalf("Failed to setup LocalStack env: %v", err)
 	}
@@ -603,7 +469,7 @@ func TestLocalStack_ErrorPassthrough(t *testing.T) {
 	}
 	defer cleanupBucket(ctx, env.BackendURL, "existing-bucket")
 
-	client, err := createProxyS3Client(ctx, env.ProxyURL, "error-user", "error-secret")
+	client, err := CreateProxyS3Client(ctx, env.ProxyURL, "error-user", "error-secret")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}

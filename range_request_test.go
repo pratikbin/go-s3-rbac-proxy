@@ -23,11 +23,11 @@ func TestIntegration_RangeRequest(t *testing.T) {
 		},
 	}
 
-	proxyURL, _, backend, cleanup := setupTestEnv(users)
+	proxyURL, _, backend, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := createS3Client(ctx, proxyURL, "user-range", "secret-range")
+	client, err := CreateS3Client(ctx, proxyURL, "user-range", "secret-range")
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestIntegration_RangeRequest(t *testing.T) {
 
 	// Verify backend received the Range header
 	// We need to inspect backend.lastHeaders
-	headers := backend.getLastHeaders()
+	headers := backend.GetLastHeaders()
 	if headers.Get("Range") == "" {
 		t.Errorf("Proxy did not forward Range header to backend")
 	} else {
