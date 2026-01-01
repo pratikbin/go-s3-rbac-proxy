@@ -1,0 +1,16 @@
+version: "2"
+run:
+  tests: false
+linters:
+  enable:
+    - modernize
+    - revive
+    - ineffassign
+    - staticcheck
+    - unused
+    - gosec
+    - loggercheck
+    - makezero
+    - usestdlibvars
+    - wrapcheck
+    - exptostd

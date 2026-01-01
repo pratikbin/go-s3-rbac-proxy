@@ -37,7 +37,7 @@ type S3ErrorResponse struct {
 	XMLName   xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ Error"`
 	Code      string   `xml:"Code"`
 	Message   string   `xml:"Message"`
-	RequestId string   `xml:"RequestId"`
+	RequestID string   `xml:"RequestId"`
 }
 
 type Owner struct {
@@ -112,11 +112,20 @@ func (c *countingReadCloser) Read(p []byte) (int, error) {
 	if n > 0 {
 		c.bytes += int64(n)
 	}
-	return n, err
+	if err != nil && err != io.EOF {
+		return n, fmt.Errorf("failed to read from counting reader: %w", err)
+	}
+	if err != nil {
+		return n, fmt.Errorf("counting reader reached end or error: %w", err)
+	}
+	return n, nil
 }
 
 func (c *countingReadCloser) Close() error {
-	return c.reader.Close()
+	if err := c.reader.Close(); err != nil {
+		return fmt.Errorf("failed to close counting reader: %w", err)
+	}
+	return nil
 }
 
 func (c *countingReadCloser) BytesRead() int64 {
@@ -138,7 +147,10 @@ func (r *responseRecorder) Write(data []byte) (int, error) {
 	}
 	n, err := r.ResponseWriter.Write(data)
 	r.bytes += int64(n)
-	return n, err
+	if err != nil {
+		return n, fmt.Errorf("failed to write response: %w", err)
+	}
+	return n, nil
 }
 
 func (r *responseRecorder) Status() int {
@@ -163,12 +175,19 @@ func (r *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if !ok {
 		return nil, nil, fmt.Errorf("response writer does not support hijacking")
 	}
-	return hijacker.Hijack()
+	conn, rw, err := hijacker.Hijack()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to hijack connection: %w", err)
+	}
+	return conn, rw, nil
 }
 
 func (r *responseRecorder) Push(target string, opts *http.PushOptions) error {
 	if pusher, ok := r.ResponseWriter.(http.Pusher); ok {
-		return pusher.Push(target, opts)
+		if err := pusher.Push(target, opts); err != nil {
+			return fmt.Errorf("failed to push: %w", err)
+		}
+		return nil
 	}
 	return http.ErrNotSupported
 }
@@ -181,7 +200,7 @@ type BufferPool struct {
 func NewBufferPool() *BufferPool {
 	return &BufferPool{
 		pool: sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				// Allocate exactly 64KB buffers
 				buf := make([]byte, optimalBufferSize)
 				return &buf
@@ -446,7 +465,7 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	userLabel = user.AccessKey
 
 	// SECURITY FIX: Intercept ListBuckets (GET /) to prevent exposing all buckets
-	if r.URL.Path == "/" && r.Method == "GET" {
+	if r.URL.Path == "/" && r.Method == http.MethodGet {
 		Logger.Debug("intercepting ListBuckets request", zap.String("user", user.AccessKey))
 		p.handleListBuckets(recorder, r, user)
 		return
@@ -492,7 +511,7 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleListBuckets handles the ListBuckets (GET /) request
 // Returns only buckets the user is authorized to access
-func (p *ProxyHandler) handleListBuckets(w http.ResponseWriter, r *http.Request, user *User) {
+func (p *ProxyHandler) handleListBuckets(w http.ResponseWriter, _ *http.Request, user *User) {
 	// Build list of authorized buckets
 	var buckets []string
 
@@ -581,7 +600,6 @@ func (p *ProxyHandler) director(req *http.Request) {
 		originalContentSha256 != unsignedPayload &&
 		!isStreamingUpload &&
 		req.Body != nil {
-
 		// SECURITY: Check body size to prevent OOM attacks
 		// If Content-Length exceeds max size, fall back to UNSIGNED-PAYLOAD
 		if req.ContentLength > p.securityConfig.MaxVerifyBodySize {
@@ -717,7 +735,11 @@ func (p *ProxyHandler) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	recordBackendLatency(req.Method, bucketLabel, duration.Seconds())
 
-	return resp, err
+	if err != nil {
+		return nil, fmt.Errorf("backend roundtrip failed: %w", err)
+	}
+
+	return resp, nil
 }
 
 // getOrCreateTransport returns a bucket-specific transport, creating it if necessary
@@ -752,7 +774,7 @@ func (p *ProxyHandler) getOrCreateTransport(bucket string) *http.Transport {
 
 // createTransport creates a high-performance HTTP transport optimized for Hetzner S3
 // Each bucket gets its own transport to isolate connection pools and respect per-bucket limits
-func (p *ProxyHandler) createTransport(bucket string) *http.Transport {
+func (p *ProxyHandler) createTransport(_ string) *http.Transport {
 	return &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
@@ -792,7 +814,7 @@ func (p *ProxyHandler) createTransport(bucket string) *http.Transport {
 }
 
 // modifyResponse modifies the backend response before sending to client
-func (p *ProxyHandler) modifyResponse(resp *http.Response) error {
+func (p *ProxyHandler) modifyResponse(_ *http.Response) error {
 	// We can add custom headers or modify response here if needed
 	// For now, pass through as-is
 	return nil
@@ -941,7 +963,7 @@ func (p *ProxyHandler) writeS3Error(w http.ResponseWriter, code, message string,
 	errorResp := S3ErrorResponse{
 		Code:      code,
 		Message:   message,
-		RequestId: generateRequestID(),
+		RequestID: generateRequestID(),
 	}
 
 	xmlHeader := []byte(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")

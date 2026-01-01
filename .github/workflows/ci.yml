@@ -45,3 +45,6 @@ jobs:
       - name: Run localstack integration tests
         run: |
           go test -tags=localstack ./... -json | tparse -all
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9

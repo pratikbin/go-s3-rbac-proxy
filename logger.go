@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -64,7 +66,7 @@ func InitLogger(level string, format string) error {
 	var err error
 	Logger, err = config.Build()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to build logger: %w", err)
 	}
 
 	return nil

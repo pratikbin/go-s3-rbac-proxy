@@ -1,3 +1,4 @@
+// Package main provides the S3 RBAC proxy implementation.
 package main
 
 import (
@@ -54,7 +55,7 @@ var upperHexTable = [256]string{
 
 // Buffer pool for reducing allocations in signature validation
 var bufferPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return new(bytes.Buffer)
 	},
 }
@@ -331,8 +332,7 @@ func (a *AuthMiddleware) validatePresignedURL(r *http.Request) (*User, error) {
 // parseAuthParams parses the authorization header parameters
 func parseAuthParams(authParams string) map[string]string {
 	result := make(map[string]string)
-	parts := strings.Split(authParams, ",")
-	for _, part := range parts {
+	for part := range strings.SplitSeq(authParams, ",") {
 		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
 		if len(kv) == 2 {
 			result[kv[0]] = kv[1]

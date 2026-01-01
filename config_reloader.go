@@ -36,8 +36,7 @@ func NewConfigReloader(configPath string, identityStore *IdentityStore, authMidd
 
 // Start begins listening for SIGHUP signals
 func (cr *ConfigReloader) Start() {
-	cr.wg.Add(1)
-	go cr.signalHandler()
+	cr.wg.Go(cr.signalHandler)
 
 	Logger.Info("configuration reloader started",
 		zap.String("config_path", cr.configPath),
@@ -115,10 +114,7 @@ func (cr *ConfigReloader) WatchConfigFile(ctx context.Context, pollInterval time
 		pollInterval = 30 * time.Second // Default poll interval
 	}
 
-	cr.wg.Add(1)
-	go func() {
-		defer cr.wg.Done()
-
+	cr.wg.Go(func() {
 		var lastModTime time.Time
 
 		// Get initial modification time
@@ -167,5 +163,5 @@ func (cr *ConfigReloader) WatchConfigFile(ctx context.Context, pollInterval time
 				return
 			}
 		}
-	}()
+	})
 }
