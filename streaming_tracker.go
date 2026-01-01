@@ -231,8 +231,8 @@ func (t *StreamingUploadTracker) GetUpload(id string) (*StreamingUpload, bool) {
 		return nil, false
 	}
 	// Return a copy to avoid race conditions
-	copy := *upload
-	return &copy, true
+	uploadCopy := *upload
+	return &uploadCopy, true
 }
 
 // cleanupUploadLocked removes an upload and updates user count.
@@ -288,7 +288,7 @@ func (r *streamingReader) Read(p []byte) (int, error) {
 	if n > 0 {
 		if updateErr := r.tracker.UpdateBytes(r.id, int64(n)); updateErr != nil {
 			// If limits exceeded (size/duration), return error to terminate the upload
-			return n, updateErr
+			return n, fmt.Errorf("failed to update upload bytes: %w", updateErr)
 		}
 	}
 	return n, err //nolint:wrapcheck // standard io behavior

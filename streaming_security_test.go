@@ -10,67 +10,86 @@ import (
 	"go.uber.org/zap"
 )
 
-func TestStreamingUploadTracker_Janitor(t *testing.T) {
+func TestStreamingUploadTracker(t *testing.T) {
 	if Logger == nil {
 		_ = InitLogger("debug", "console")
 	}
 
-	maxDuration := 500 * time.Millisecond
-	tracker := NewStreamingUploadTracker(5, 1024*1024, maxDuration)
-	tracker.StartJanitor(100 * time.Millisecond)
-	defer tracker.Stop()
-
-	id := "test-upload-1"
-	err := tracker.TryStartUpload(id, "user1", "bucket1", "key1", "")
-	if err != nil {
-		t.Fatalf("Failed to start upload: %v", err)
+	tests := []struct {
+		name            string
+		maxDuration     time.Duration
+		waitTime        time.Duration
+		updateBytes     bool
+		shouldBeCleaned bool
+		checkLastSeen   bool
+	}{
+		{
+			name:            "janitor_cleans_up_after_max_duration",
+			maxDuration:     500 * time.Millisecond,
+			waitTime:        700 * time.Millisecond, // Wait longer than maxDuration
+			updateBytes:     false,
+			shouldBeCleaned: true,
+			checkLastSeen:   false,
+		},
+		{
+			name:            "idle_timeout_tracks_last_seen",
+			maxDuration:     1 * time.Hour,
+			waitTime:        100 * time.Millisecond,
+			updateBytes:     true,
+			shouldBeCleaned: false,
+			checkLastSeen:   true,
+		},
 	}
 
-	// Verify upload is tracked
-	if _, exists := tracker.GetUpload(id); !exists {
-		t.Fatal("Upload should be tracked")
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker := NewStreamingUploadTracker(5, 1024*1024, tt.maxDuration)
 
-	// Wait for maxDuration to expire
-	time.Sleep(maxDuration + 200*time.Millisecond)
+			// Only start janitor for the first test
+			if tt.name == "janitor_cleans_up_after_max_duration" {
+				tracker.StartJanitor(100 * time.Millisecond)
+				defer tracker.Stop()
+			}
 
-	// Verify upload is cleaned up by janitor
-	if _, exists := tracker.GetUpload(id); exists {
-		t.Fatal("Upload should have been cleaned up by janitor due to duration limit")
-	}
-}
+			id := "test-upload-" + tt.name
+			err := tracker.TryStartUpload(id, "user1", "bucket1", "key1", "")
+			if err != nil {
+				t.Fatalf("Failed to start upload: %v", err)
+			}
 
-func TestStreamingUploadTracker_IdleTimeout(t *testing.T) {
-	if Logger == nil {
-		_ = InitLogger("debug", "console")
-	}
+			// Verify upload is tracked
+			if _, exists := tracker.GetUpload(id); !exists {
+				t.Fatal("Upload should be tracked")
+			}
 
-	tracker := NewStreamingUploadTracker(5, 1024*1024, 1*time.Hour)
-	// We need to manually trigger cleanup or set a very short idle timeout for testing
-	// In the implementation, idleTimeout is fixed at 2 minutes.
-	// Let's modify the implementation to make idleTimeout configurable or use a shorter one if needed for tests.
-	// For now, I'll just test that it DOESN'T clean up if it's NOT idle.
+			// Wait specified time
+			time.Sleep(tt.waitTime)
 
-	id := "test-upload-2"
-	err := tracker.TryStartUpload(id, "user1", "bucket1", "key1", "")
-	if err != nil {
-		t.Fatalf("Failed to start upload: %v", err)
-	}
+			// Update bytes if needed
+			if tt.updateBytes {
+				err = tracker.UpdateBytes(id, 100)
+				if err != nil {
+					t.Fatalf("Failed to update bytes: %v", err)
+				}
+			}
 
-	time.Sleep(100 * time.Millisecond)
-	err = tracker.UpdateBytes(id, 100)
-	if err != nil {
-		t.Fatalf("Failed to update bytes: %v", err)
-	}
+			// Check if upload was cleaned up
+			upload, exists := tracker.GetUpload(id)
+			if tt.shouldBeCleaned && exists {
+				t.Fatal("Upload should have been cleaned up")
+			}
+			if !tt.shouldBeCleaned && !exists {
+				t.Fatal("Upload should still be tracked")
+			}
 
-	upload, exists := tracker.GetUpload(id)
-	if !exists {
-		t.Fatal("Upload should still be tracked")
-	}
-	lastSeen := upload.LastSeen
-
-	if lastSeen.IsZero() {
-		t.Fatal("LastSeen should be set")
+			// Check LastSeen if needed
+			if tt.checkLastSeen && exists {
+				lastSeen := upload.LastSeen
+				if lastSeen.IsZero() {
+					t.Fatal("LastSeen should be set")
+				}
+			}
+		})
 	}
 }
 

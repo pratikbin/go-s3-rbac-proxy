@@ -131,47 +131,6 @@ func TestPresignedURL_ClockSkewValidation(t *testing.T) {
 	}
 }
 
-// TestPresignedURL_ClockSkewPreventsOldURLAbuse tests that even 7-day presigned URLs
-// can't be used if their creation timestamp is too old
-func TestPresignedURL_ClockSkewPreventsOldURLAbuse(t *testing.T) {
-	users := []User{
-		{
-			AccessKey:      "test-access-key",
-			SecretKey:      "test-secret-key",
-			AllowedBuckets: []string{"test-bucket"},
-		},
-	}
-
-	store := NewIdentityStore(users)
-	auth := NewAuthMiddleware(store)
-
-	// Create a presigned URL with X-Amz-Date from 1 hour ago
-	// Even though it claims 7-day expiry, the timestamp is too old
-	oldTime := time.Now().UTC().Add(-1 * time.Hour)
-	dateStr := oldTime.Format(iso8601BasicFormat)
-
-	url := "/test-bucket/object.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256" +
-		"&X-Amz-Credential=test-access-key/20231215/us-east-1/s3/aws4_request" +
-		"&X-Amz-Date=" + dateStr +
-		"&X-Amz-Expires=604800" + // 7 days
-		"&X-Amz-SignedHeaders=host" +
-		"&X-Amz-Signature=fakesignature"
-
-	req := httptest.NewRequest("GET", url, nil)
-	req.Host = "s3.example.com"
-
-	_, err := auth.validatePresignedURL(req)
-
-	// Should be rejected due to clock skew, not expiry
-	if err == nil {
-		t.Fatal("Expected clock skew error, got nil")
-	}
-
-	if err.Error() != "request timestamp outside acceptable time window (±15 minutes)" {
-		t.Errorf("Expected clock skew error, got: %v", err)
-	}
-}
-
 // TestPresignedURL_ClockSkewVsExpiry tests the interaction between
 // clock skew validation and expiry validation
 func TestPresignedURL_ClockSkewVsExpiry(t *testing.T) {
@@ -214,6 +173,20 @@ func TestPresignedURL_ClockSkewVsExpiry(t *testing.T) {
 			expectedError: "signature",      // Will fail on signature
 			checkOrder:    "Both checks pass, fails on signature",
 		},
+		{
+			name:          "prevents_old_url_abuse",
+			timeOffset:    -1 * time.Hour, // 1 hour ago - outside window
+			expirySeconds: 604800,         // 7 days - not expired
+			expectedError: "outside acceptable time window",
+			checkOrder:    "Clock skew blocks old URLs regardless of expiry",
+		},
+		{
+			name:          "defense_in_depth_old_attack",
+			timeOffset:    -2 * time.Hour, // 2 hours ago - outside window
+			expirySeconds: 604800,         // 7 days - not expired
+			expectedError: "outside acceptable time window",
+			checkOrder:    "Defense in depth: clock skew before expiry",
+		},
 	}
 
 	for _, tt := range tests {
@@ -242,48 +215,4 @@ func TestPresignedURL_ClockSkewVsExpiry(t *testing.T) {
 			t.Logf("Got error: %v", err)
 		})
 	}
-}
-
-// TestPresignedURL_ClockSkewDefenseInDepth demonstrates the defense-in-depth
-// approach: clock skew validation happens BEFORE expiry and signature checks
-func TestPresignedURL_ClockSkewDefenseInDepth(t *testing.T) {
-	users := []User{
-		{
-			AccessKey:      "test-access-key",
-			SecretKey:      "test-secret-key",
-			AllowedBuckets: []string{"test-bucket"},
-		},
-	}
-
-	store := NewIdentityStore(users)
-	auth := NewAuthMiddleware(store)
-
-	// Scenario: Attacker has a valid 7-day presigned URL from 2 hours ago
-	// The URL hasn't expired yet (still valid for 5+ days)
-	// But the timestamp is outside clock skew window
-	attackTime := time.Now().UTC().Add(-2 * time.Hour)
-	dateStr := attackTime.Format(iso8601BasicFormat)
-
-	url := "/test-bucket/secret.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256" +
-		"&X-Amz-Credential=test-access-key/20231215/us-east-1/s3/aws4_request" +
-		"&X-Amz-Date=" + dateStr +
-		"&X-Amz-Expires=604800" + // 7 days - not yet expired
-		"&X-Amz-SignedHeaders=host" +
-		"&X-Amz-Signature=fakesignature"
-
-	req := httptest.NewRequest("GET", url, nil)
-	req.Host = "s3.example.com"
-
-	_, err := auth.validatePresignedURL(req)
-
-	// Attack should be blocked by clock skew check, not expiry check
-	if err == nil {
-		t.Fatal("Expected to block old URL, got nil")
-	}
-
-	if err.Error() != "request timestamp outside acceptable time window (±15 minutes)" {
-		t.Errorf("Expected clock skew rejection, got: %v", err)
-	}
-
-	t.Logf("✅ Defense in depth: Clock skew check blocked replay of old (but not yet expired) presigned URL")
 }

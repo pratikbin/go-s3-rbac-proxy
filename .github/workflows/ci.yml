@@ -32,7 +32,7 @@ jobs:
       - name: Run unit tests
         run: |
           go install github.com/mfridman/tparse@latest
-          go test ./... -json | tparse -all
+          go test ./... -json | tparse
 
       # - name: Upload coverage to Codecov
       #   uses: codecov/codecov-action@v5
@@ -44,7 +44,7 @@ jobs:
 
       - name: Run localstack integration tests
         run: |
-          go test -tags=localstack ./... -json | tparse -all
+          go test -tags=localstack ./... -json | tparse
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
