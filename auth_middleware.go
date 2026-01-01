@@ -163,18 +163,24 @@ func (a *AuthMiddleware) ValidateRequest(r *http.Request) (*User, error) {
 		// - They can then send unlimited garbage data before the backend validates chunk signatures
 		// - This could exhaust bandwidth, backend processing resources, or storage
 		//
-		// Mitigation strategies:
+		// Mitigation strategies (implemented in StreamingUploadTracker):
+		// 1. Add rate limiting and size limits for streaming uploads (DONE)
+		// 2. Use shorter idle timeouts for streaming connections (DONE)
+		// 3. Enforce absolute duration limits on streaming connections (DONE)
+		// 4. Background janitor for cleaning up zombie connections (DONE)
+		//
+		// Future enhancements:
 		// 1. Implement proper chunk signature validation in the proxy (complex)
-		// 2. Add rate limiting and size limits for streaming uploads
-		// 3. Use shorter timeouts for streaming connections
-		// 4. Monitor and alert on abnormal streaming upload patterns
+		// 2. Monitor and alert on abnormal streaming upload patterns
 		//
 		// Current protections:
 		// - User must know valid credentials (checked above)
 		// - Timestamp prevents replay attacks (checked above)
 		// - Backend (Hetzner) will validate actual chunk integrity
 		// - Authorization for bucket access is checked in ServeHTTP
-		Logger.Warn("streaming chunked upload detected - SECURITY WARNING: chunk validation delegated to backend (resource exhaustion attack possible)",
+		// - StreamingUploadTracker enforces size, duration and concurrency limits
+		// - streamingReader enforces 60s idle timeout via ReadDeadline
+		Logger.Info("streaming chunked upload detected - mitigations applied via StreamingUploadTracker",
 			zap.String("access_key", accessKey),
 			zap.String("path", r.URL.Path),
 		)

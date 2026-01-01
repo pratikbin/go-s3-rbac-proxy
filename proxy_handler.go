@@ -229,6 +229,7 @@ type StreamingUpload struct {
 	Bucket        string
 	Key           string
 	StartTime     time.Time
+	LastSeen      time.Time // Last time data was received
 	BytesReceived int64
 	UploadID      string // For multipart uploads
 }
@@ -241,16 +242,75 @@ type StreamingUploadTracker struct {
 	maxConcurrent   int
 	maxSize         int64
 	maxDuration     time.Duration
+	stopJanitor     chan struct{}
 }
 
 // NewStreamingUploadTracker creates a new tracker with security limits
 func NewStreamingUploadTracker(maxConcurrent int, maxSize int64, maxDuration time.Duration) *StreamingUploadTracker {
-	return &StreamingUploadTracker{
+	t := &StreamingUploadTracker{
 		uploads:         make(map[string]*StreamingUpload),
 		userUploadCount: make(map[string]int),
 		maxConcurrent:   maxConcurrent,
 		maxSize:         maxSize,
 		maxDuration:     maxDuration,
+		stopJanitor:     make(chan struct{}),
+	}
+	return t
+}
+
+// StartJanitor runs a background goroutine to clean up stale uploads
+func (t *StreamingUploadTracker) StartJanitor(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				t.cleanupStaleUploads()
+			case <-t.stopJanitor:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+}
+
+// Stop stops the janitor goroutine
+func (t *StreamingUploadTracker) Stop() {
+	close(t.stopJanitor)
+}
+
+func (t *StreamingUploadTracker) cleanupStaleUploads() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	now := time.Now()
+	// Idle timeout: if no data for 2 minutes, consider it a zombie
+	idleTimeout := 2 * time.Minute
+
+	for id, upload := range t.uploads {
+		isStale := false
+		var reason string
+
+		// Check absolute duration
+		if t.maxDuration > 0 && now.Sub(upload.StartTime) > t.maxDuration {
+			isStale = true
+			reason = "duration limit exceeded"
+		} else if now.Sub(upload.LastSeen) > idleTimeout {
+			// Check idle time
+			isStale = true
+			reason = "idle timeout exceeded"
+		}
+
+		if isStale {
+			Logger.Warn("cleaning up stale streaming upload",
+				zap.String("id", id),
+				zap.String("user", upload.UserAccessKey),
+				zap.String("bucket", upload.Bucket),
+				zap.String("key", upload.Key),
+				zap.String("reason", reason),
+			)
+			t.cleanupUpload(id, upload.UserAccessKey)
+		}
 	}
 }
 
@@ -267,15 +327,14 @@ func (t *StreamingUploadTracker) TryStartUpload(id, userAccessKey, bucket, key, 
 		}
 	}
 
-	// Check total concurrent uploads (optional, but good for resource protection)
-	// We'll skip this for now to focus on per-user limits
-
 	// Create and register the upload
+	now := time.Now()
 	upload := &StreamingUpload{
 		UserAccessKey: userAccessKey,
 		Bucket:        bucket,
 		Key:           key,
-		StartTime:     time.Now(),
+		StartTime:     now,
+		LastSeen:      now,
 		BytesReceived: 0,
 		UploadID:      uploadID,
 	}
@@ -296,7 +355,9 @@ func (t *StreamingUploadTracker) UpdateBytes(id string, bytes int64) error {
 		return fmt.Errorf("upload not found: %s", id)
 	}
 
+	now := time.Now()
 	upload.BytesReceived += bytes
+	upload.LastSeen = now
 
 	// Check size limit
 	if t.maxSize > 0 && upload.BytesReceived > t.maxSize {
@@ -305,7 +366,7 @@ func (t *StreamingUploadTracker) UpdateBytes(id string, bytes int64) error {
 	}
 
 	// Check duration limit
-	if t.maxDuration > 0 && time.Since(upload.StartTime) > t.maxDuration {
+	if t.maxDuration > 0 && now.Sub(upload.StartTime) > t.maxDuration {
 		t.cleanupUpload(id, upload.UserAccessKey)
 		return fmt.Errorf("streaming upload exceeded maximum duration (%v)", t.maxDuration)
 	}
@@ -333,6 +394,40 @@ func (t *StreamingUploadTracker) cleanupUpload(id, userAccessKey string) {
 			t.userUploadCount[userAccessKey] = count - 1
 		}
 	}
+}
+
+type streamingReader struct {
+	io.ReadCloser
+	id          string
+	tracker     *StreamingUploadTracker
+	recorder    http.ResponseWriter
+	idleTimeout time.Duration
+}
+
+func (r *streamingReader) Read(p []byte) (int, error) {
+	if r.idleTimeout > 0 {
+		// Set read deadline to catch idle connections
+		rc := http.NewResponseController(r.recorder)
+		if err := rc.SetReadDeadline(time.Now().Add(r.idleTimeout)); err != nil {
+			// Some writers might not support setting deadlines (e.g. in tests)
+			// We log it but continue as the janitor provides secondary protection
+			Logger.Debug("failed to set read deadline", zap.Error(err))
+		}
+	}
+
+	n, err := r.ReadCloser.Read(p)
+	if n > 0 {
+		if updateErr := r.tracker.UpdateBytes(r.id, int64(n)); updateErr != nil {
+			// If limits exceeded (size/duration), return error to terminate the upload
+			return n, updateErr
+		}
+	}
+	return n, err //nolint:wrapcheck // standard io behavior
+}
+
+func (r *streamingReader) Close() error {
+	r.tracker.CompleteUpload(r.id)
+	return r.ReadCloser.Close() //nolint:wrapcheck
 }
 
 // ProxyHandler handles the reverse proxy logic
@@ -373,6 +468,8 @@ func NewProxyHandler(authMiddleware *AuthMiddleware, masterCreds MasterCredentia
 		securityConfig.MaxStreamingUploadSize,
 		securityConfig.GetMaxStreamingUploadDuration(),
 	)
+	// Start background janitor to clean up stale uploads
+	uploadTracker.StartJanitor(1 * time.Minute)
 
 	handler := &ProxyHandler{
 		authMiddleware: authMiddleware,
@@ -406,6 +503,13 @@ func NewProxyHandler(authMiddleware *AuthMiddleware, masterCreds MasterCredentia
 	)
 
 	return handler
+}
+
+// Stop stops background tasks
+func (p *ProxyHandler) Stop() {
+	if p.uploadTracker != nil {
+		p.uploadTracker.Stop()
+	}
 }
 
 // ServeHTTP handles incoming requests
@@ -483,6 +587,38 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		recordRBACDenied(user.AccessKey, bucket)
 		p.writeS3Error(recorder, "AccessDenied", "Access Denied", http.StatusForbidden)
 		return
+	}
+
+	// Handle streaming upload tracking and security limits
+	if r.Header.Get(contentSHA256Header) == streamingPayload {
+		requestID := generateRequestID()
+		uploadID := r.URL.Query().Get("uploadId")
+
+		if err := p.uploadTracker.TryStartUpload(requestID, user.AccessKey, bucket, r.URL.Path, uploadID); err != nil {
+			Logger.Warn("streaming upload rejected",
+				zap.Error(err),
+				zap.String("user", user.AccessKey),
+				zap.String("bucket", bucket),
+			)
+			p.writeS3Error(recorder, "ServiceUnavailable", "Too many concurrent streaming uploads", http.StatusServiceUnavailable)
+			return
+		}
+
+		// Wrap body with streaming tracker and idle timeout enforcement
+		// Use 60s idle timeout for streaming uploads
+		r.Body = &streamingReader{
+			ReadCloser:  r.Body,
+			id:          requestID,
+			tracker:     p.uploadTracker,
+			recorder:    recorder,
+			idleTimeout: 60 * time.Second,
+		}
+
+		Logger.Info("tracking streaming upload",
+			zap.String("id", requestID),
+			zap.String("user", user.AccessKey),
+			zap.String("bucket", bucket),
+		)
 	}
 
 	// Store user in context for use in director (using typed keys to avoid collisions)

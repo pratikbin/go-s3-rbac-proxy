@@ -77,6 +77,7 @@ func main() {
 
 	// Create proxy handler
 	proxyHandler := NewProxyHandler(authMiddleware, config.MasterCredentials, config.Security)
+	defer proxyHandler.Stop()
 
 	// Create HTTP server
 	server := &http.Server{
