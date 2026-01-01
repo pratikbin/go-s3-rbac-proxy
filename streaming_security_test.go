@@ -27,23 +27,17 @@ func TestStreamingUploadTracker_Janitor(t *testing.T) {
 	}
 
 	// Verify upload is tracked
-	tracker.mu.RLock()
-	if _, exists := tracker.uploads[id]; !exists {
-		tracker.mu.RUnlock()
+	if _, exists := tracker.GetUpload(id); !exists {
 		t.Fatal("Upload should be tracked")
 	}
-	tracker.mu.RUnlock()
 
 	// Wait for maxDuration to expire
 	time.Sleep(maxDuration + 200*time.Millisecond)
 
 	// Verify upload is cleaned up by janitor
-	tracker.mu.RLock()
-	if _, exists := tracker.uploads[id]; exists {
-		tracker.mu.RUnlock()
+	if _, exists := tracker.GetUpload(id); exists {
 		t.Fatal("Upload should have been cleaned up by janitor due to duration limit")
 	}
-	tracker.mu.RUnlock()
 }
 
 func TestStreamingUploadTracker_IdleTimeout(t *testing.T) {
@@ -69,14 +63,11 @@ func TestStreamingUploadTracker_IdleTimeout(t *testing.T) {
 		t.Fatalf("Failed to update bytes: %v", err)
 	}
 
-	tracker.mu.RLock()
-	upload, exists := tracker.uploads[id]
+	upload, exists := tracker.GetUpload(id)
 	if !exists {
-		tracker.mu.RUnlock()
 		t.Fatal("Upload should still be tracked")
 	}
 	lastSeen := upload.LastSeen
-	tracker.mu.RUnlock()
 
 	if lastSeen.IsZero() {
 		t.Fatal("LastSeen should be set")

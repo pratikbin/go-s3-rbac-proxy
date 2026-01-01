@@ -6,7 +6,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-const metricsQueueSize = 1000
+const metricsQueueSize = 10000
 
 type requestMetricsEvent struct {
 	method          string
@@ -120,32 +120,36 @@ func init() {
 		}
 	}
 
-	go func() {
-		for event := range requestMetricsQueue {
-			httpRequestsTotal.WithLabelValues(event.method, event.code, event.bucket, event.user).Inc()
-			httpRequestDuration.WithLabelValues(event.method, event.bucket).Observe(event.durationSeconds)
-		}
-	}()
-	go func() {
-		for event := range dataTransferQueue {
-			dataTransferBytesTotal.WithLabelValues(event.direction, event.user, event.bucket).Add(float64(event.bytes))
-		}
-	}()
-	go func() {
-		for event := range backendLatencyQueue {
-			backendLatencySeconds.WithLabelValues(event.method, event.bucket).Observe(event.durationSeconds)
-		}
-	}()
-	go func() {
-		for event := range authErrorsQueue {
-			authErrorsTotal.WithLabelValues(event.reason).Inc()
-		}
-	}()
-	go func() {
-		for event := range rbacDeniedQueue {
-			rbacDeniedTotal.WithLabelValues(event.user, event.bucket).Inc()
-		}
-	}()
+	for i := 0; i < 10; i++ {
+		go func() {
+			for event := range requestMetricsQueue {
+				httpRequestsTotal.WithLabelValues(event.method, event.code, event.bucket, event.user).Inc()
+				httpRequestDuration.WithLabelValues(event.method, event.bucket).Observe(event.durationSeconds)
+			}
+		}()
+		go func() {
+			for event := range dataTransferQueue {
+				dataTransferBytesTotal.WithLabelValues(event.direction, event.user, event.bucket).Add(float64(event.bytes))
+			}
+		}()
+		go func() {
+			for event := range backendLatencyQueue {
+				backendLatencySeconds.WithLabelValues(event.method, event.bucket).Observe(event.durationSeconds)
+			}
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		go func() {
+			for event := range authErrorsQueue {
+				authErrorsTotal.WithLabelValues(event.reason).Inc()
+			}
+		}()
+		go func() {
+			for event := range rbacDeniedQueue {
+				rbacDeniedTotal.WithLabelValues(event.user, event.bucket).Inc()
+			}
+		}()
+	}
 }
 
 func recordRequestMetrics(method, code, bucket, user string, durationSeconds float64) {

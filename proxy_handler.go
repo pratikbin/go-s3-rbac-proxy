@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/xml"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net"
 	"net/http"
@@ -234,11 +235,22 @@ type StreamingUpload struct {
 	UploadID      string // For multipart uploads
 }
 
+const numShards = 32
+
+type uploadShard struct {
+	mu      sync.RWMutex
+	uploads map[string]*StreamingUpload
+}
+
+type userCountShard struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
 // StreamingUploadTracker manages concurrent streaming uploads with limits
 type StreamingUploadTracker struct {
-	mu              sync.RWMutex
-	uploads         map[string]*StreamingUpload // key: request ID or connection ID
-	userUploadCount map[string]int              // user access key -> count
+	uploadShards    [numShards]*uploadShard
+	userCountShards [numShards]*userCountShard
 	maxConcurrent   int
 	maxSize         int64
 	maxDuration     time.Duration
@@ -248,14 +260,32 @@ type StreamingUploadTracker struct {
 // NewStreamingUploadTracker creates a new tracker with security limits
 func NewStreamingUploadTracker(maxConcurrent int, maxSize int64, maxDuration time.Duration) *StreamingUploadTracker {
 	t := &StreamingUploadTracker{
-		uploads:         make(map[string]*StreamingUpload),
-		userUploadCount: make(map[string]int),
-		maxConcurrent:   maxConcurrent,
-		maxSize:         maxSize,
-		maxDuration:     maxDuration,
-		stopJanitor:     make(chan struct{}),
+		maxConcurrent: maxConcurrent,
+		maxSize:       maxSize,
+		maxDuration:   maxDuration,
+		stopJanitor:   make(chan struct{}),
+	}
+	for i := 0; i < numShards; i++ {
+		t.uploadShards[i] = &uploadShard{
+			uploads: make(map[string]*StreamingUpload),
+		}
+		t.userCountShards[i] = &userCountShard{
+			counts: make(map[string]int),
+		}
 	}
 	return t
+}
+
+func (t *StreamingUploadTracker) getUploadShard(id string) *uploadShard {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(id))
+	return t.uploadShards[h.Sum32()%numShards]
+}
+
+func (t *StreamingUploadTracker) getUserShard(user string) *userCountShard {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(user))
+	return t.userCountShards[h.Sum32()%numShards]
 }
 
 // StartJanitor runs a background goroutine to clean up stale uploads
@@ -280,48 +310,56 @@ func (t *StreamingUploadTracker) Stop() {
 }
 
 func (t *StreamingUploadTracker) cleanupStaleUploads() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	now := time.Now()
 	// Idle timeout: if no data for 2 minutes, consider it a zombie
 	idleTimeout := 2 * time.Minute
 
-	for id, upload := range t.uploads {
-		isStale := false
-		var reason string
+	for i := 0; i < numShards; i++ {
+		shard := t.uploadShards[i]
+		shard.mu.Lock()
+		for id, upload := range shard.uploads {
+			isStale := false
+			var reason string
 
-		// Check absolute duration
-		if t.maxDuration > 0 && now.Sub(upload.StartTime) > t.maxDuration {
-			isStale = true
-			reason = "duration limit exceeded"
-		} else if now.Sub(upload.LastSeen) > idleTimeout {
-			// Check idle time
-			isStale = true
-			reason = "idle timeout exceeded"
-		}
+			// Check absolute duration
+			if t.maxDuration > 0 && now.Sub(upload.StartTime) > t.maxDuration {
+				isStale = true
+				reason = "duration limit exceeded"
+			} else if now.Sub(upload.LastSeen) > idleTimeout {
+				// Check idle time
+				isStale = true
+				reason = "idle timeout exceeded"
+			}
 
-		if isStale {
-			Logger.Warn("cleaning up stale streaming upload",
-				zap.String("id", id),
-				zap.String("user", upload.UserAccessKey),
-				zap.String("bucket", upload.Bucket),
-				zap.String("key", upload.Key),
-				zap.String("reason", reason),
-			)
-			t.cleanupUpload(id, upload.UserAccessKey)
+			if isStale {
+				Logger.Warn("cleaning up stale streaming upload",
+					zap.String("id", id),
+					zap.String("user", upload.UserAccessKey),
+					zap.String("bucket", upload.Bucket),
+					zap.String("key", upload.Key),
+					zap.String("reason", reason),
+				)
+				t.cleanupUploadLocked(shard, id)
+			}
 		}
+		shard.mu.Unlock()
 	}
 }
 
 // TryStartUpload attempts to start a new streaming upload with security checks
 func (t *StreamingUploadTracker) TryStartUpload(id, userAccessKey, bucket, key, uploadID string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	uShard := t.getUserShard(userAccessKey)
+	upShard := t.getUploadShard(id)
+
+	// To avoid deadlock, we must lock in consistent order: Upload shard then User shard
+	upShard.mu.Lock()
+	defer upShard.mu.Unlock()
+	uShard.mu.Lock()
+	defer uShard.mu.Unlock()
 
 	// Check user concurrency limit
 	if t.maxConcurrent > 0 {
-		currentCount := t.userUploadCount[userAccessKey]
+		currentCount := uShard.counts[userAccessKey]
 		if currentCount >= t.maxConcurrent {
 			return fmt.Errorf("user %s has reached maximum concurrent streaming uploads (%d)", userAccessKey, t.maxConcurrent)
 		}
@@ -339,18 +377,19 @@ func (t *StreamingUploadTracker) TryStartUpload(id, userAccessKey, bucket, key, 
 		UploadID:      uploadID,
 	}
 
-	t.uploads[id] = upload
-	t.userUploadCount[userAccessKey]++
+	upShard.uploads[id] = upload
+	uShard.counts[userAccessKey]++
 
 	return nil
 }
 
 // UpdateBytes updates the byte count for an upload and checks size limits
 func (t *StreamingUploadTracker) UpdateBytes(id string, bytes int64) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	shard := t.getUploadShard(id)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	upload, exists := t.uploads[id]
+	upload, exists := shard.uploads[id]
 	if !exists {
 		return fmt.Errorf("upload not found: %s", id)
 	}
@@ -361,13 +400,13 @@ func (t *StreamingUploadTracker) UpdateBytes(id string, bytes int64) error {
 
 	// Check size limit
 	if t.maxSize > 0 && upload.BytesReceived > t.maxSize {
-		t.cleanupUpload(id, upload.UserAccessKey)
+		t.cleanupUploadLocked(shard, id)
 		return fmt.Errorf("streaming upload exceeded maximum size (%d bytes)", t.maxSize)
 	}
 
 	// Check duration limit
 	if t.maxDuration > 0 && now.Sub(upload.StartTime) > t.maxDuration {
-		t.cleanupUpload(id, upload.UserAccessKey)
+		t.cleanupUploadLocked(shard, id)
 		return fmt.Errorf("streaming upload exceeded maximum duration (%v)", t.maxDuration)
 	}
 
@@ -376,24 +415,49 @@ func (t *StreamingUploadTracker) UpdateBytes(id string, bytes int64) error {
 
 // CompleteUpload marks an upload as completed and cleans up resources
 func (t *StreamingUploadTracker) CompleteUpload(id string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	shard := t.getUploadShard(id)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	if upload, exists := t.uploads[id]; exists {
-		t.cleanupUpload(id, upload.UserAccessKey)
-	}
+	t.cleanupUploadLocked(shard, id)
 }
 
-// cleanupUpload removes an upload and updates user count
-func (t *StreamingUploadTracker) cleanupUpload(id, userAccessKey string) {
-	delete(t.uploads, id)
-	if count, exists := t.userUploadCount[userAccessKey]; exists {
+// GetUpload returns a copy of the tracked upload if it exists.
+// Useful for testing and monitoring.
+func (t *StreamingUploadTracker) GetUpload(id string) (*StreamingUpload, bool) {
+	shard := t.getUploadShard(id)
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
+
+	upload, exists := shard.uploads[id]
+	if !exists {
+		return nil, false
+	}
+	// Return a copy to avoid race conditions
+	copy := *upload
+	return &copy, true
+}
+
+// cleanupUploadLocked removes an upload and updates user count.
+// MUST be called with shard.mu held.
+func (t *StreamingUploadTracker) cleanupUploadLocked(shard *uploadShard, id string) {
+	upload, exists := shard.uploads[id]
+	if !exists {
+		return
+	}
+
+	uShard := t.getUserShard(upload.UserAccessKey)
+	uShard.mu.Lock()
+	defer uShard.mu.Unlock()
+
+	if count, exists := uShard.counts[upload.UserAccessKey]; exists {
 		if count <= 1 {
-			delete(t.userUploadCount, userAccessKey)
+			delete(uShard.counts, upload.UserAccessKey)
 		} else {
-			t.userUploadCount[userAccessKey] = count - 1
+			uShard.counts[upload.UserAccessKey] = count - 1
 		}
 	}
+	delete(shard.uploads, id)
 }
 
 type streamingReader struct {
