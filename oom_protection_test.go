@@ -21,13 +21,7 @@ func TestOOMProtection_SizeLimit(t *testing.T) {
 	}
 
 	store := NewIdentityStore(users)
-	auth := NewAuthMiddleware(store)
-	masterCreds := MasterCredentials{
-		AccessKey: "master-key",
-		SecretKey: "master-secret",
-		Endpoint:  "https://backend.example.com",
-		Region:    "us-east-1",
-	}
+	_ = store
 
 	tests := []struct {
 		name                string
@@ -72,7 +66,9 @@ func TestOOMProtection_SizeLimit(t *testing.T) {
 				VerifyContentIntegrity: true, // Enable verification
 				MaxVerifyBodySize:      tt.maxVerifyBodySize,
 			}
-			proxy := NewProxyHandler(auth, masterCreds, securityConfig)
+			proxy := NewTestProxyHandler(users, securityConfig)
+			// Manually override master creds if needed, or just use what NewTestProxyHandler provides
+			// For this test, endpoint and region don't matter as we only call director
 
 			// Create body of specified size
 			body := bytes.Repeat([]byte("A"), tt.bodySize)
@@ -119,18 +115,12 @@ func TestOOMProtection_ContentLengthMismatch(t *testing.T) {
 	}
 
 	store := NewIdentityStore(users)
-	auth := NewAuthMiddleware(store)
-	masterCreds := MasterCredentials{
-		AccessKey: "master-key",
-		SecretKey: "master-secret",
-		Endpoint:  "https://backend.example.com",
-		Region:    "us-east-1",
-	}
+	_ = store
 	securityConfig := SecurityConfig{
 		VerifyContentIntegrity: true,
 		MaxVerifyBodySize:      1024, // 1KB limit
 	}
-	proxy := NewProxyHandler(auth, masterCreds, securityConfig)
+	proxy := NewTestProxyHandler(users, securityConfig)
 
 	// Claim small size in Content-Length
 	smallBody := bytes.Repeat([]byte("A"), 512) // 512 bytes
@@ -172,18 +162,12 @@ func TestOOMProtection_UnknownContentLength(t *testing.T) {
 	}
 
 	store := NewIdentityStore(users)
-	auth := NewAuthMiddleware(store)
-	masterCreds := MasterCredentials{
-		AccessKey: "master-key",
-		SecretKey: "master-secret",
-		Endpoint:  "https://backend.example.com",
-		Region:    "us-east-1",
-	}
+	_ = store
 	securityConfig := SecurityConfig{
 		VerifyContentIntegrity: true,
 		MaxVerifyBodySize:      10 * 1024 * 1024, // 10MB
 	}
-	proxy := NewProxyHandler(auth, masterCreds, securityConfig)
+	proxy := NewTestProxyHandler(users, securityConfig)
 
 	body := []byte("test data")
 	hash := sha256.Sum256(body)
@@ -215,18 +199,12 @@ func TestOOMProtection_DisabledVerification(t *testing.T) {
 	}
 
 	store := NewIdentityStore(users)
-	auth := NewAuthMiddleware(store)
-	masterCreds := MasterCredentials{
-		AccessKey: "master-key",
-		SecretKey: "master-secret",
-		Endpoint:  "https://backend.example.com",
-		Region:    "us-east-1",
-	}
+	_ = store
 	securityConfig := SecurityConfig{
 		VerifyContentIntegrity: false, // Disabled
 		MaxVerifyBodySize:      1024,  // Small limit (should be ignored)
 	}
-	proxy := NewProxyHandler(auth, masterCreds, securityConfig)
+	proxy := NewTestProxyHandler(users, securityConfig)
 
 	// Large body (exceeds limit)
 	body := bytes.Repeat([]byte("A"), 10*1024*1024) // 10MB
@@ -268,13 +246,7 @@ func TestOOMProtection_DefaultMaxSize(t *testing.T) {
 	}
 
 	store := NewIdentityStore(users)
-	auth := NewAuthMiddleware(store)
-	masterCreds := MasterCredentials{
-		AccessKey: "master-key",
-		SecretKey: "master-secret",
-		Endpoint:  "https://backend.example.com",
-		Region:    "us-east-1",
-	}
+	_ = store
 
 	// Create security config without explicit max size (should get default)
 	securityConfig := SecurityConfig{
@@ -287,7 +259,7 @@ func TestOOMProtection_DefaultMaxSize(t *testing.T) {
 		securityConfig.MaxVerifyBodySize = 50 * 1024 * 1024 // 50MB default
 	}
 
-	proxy := NewProxyHandler(auth, masterCreds, securityConfig)
+	proxy := NewTestProxyHandler(users, securityConfig)
 
 	// Verify proxy has reasonable default (50MB)
 	expectedDefault := int64(50 * 1024 * 1024)

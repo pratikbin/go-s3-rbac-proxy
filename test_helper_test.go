@@ -59,8 +59,15 @@ func SetupMockEnv(users []User) (proxyURL string, backendURL string, backend *mo
 		MaxVerifyBodySize:      50 * 1024 * 1024,
 	}
 
+	// Initialize streaming upload tracker
+	uploadTracker := NewStreamingUploadTracker(
+		5,
+		1024*1024*1024,
+		1*time.Hour,
+	)
+
 	// Create proxy handler
-	proxyHandler := NewProxyHandler(auth, masterCreds, securityConfig)
+	proxyHandler := NewProxyHandler(auth, masterCreds, securityConfig, uploadTracker)
 	proxyServer := httptest.NewServer(proxyHandler)
 
 	cleanup = func() {
@@ -161,7 +168,15 @@ func SetupLocalStackEnv(ctx context.Context, users []User) (*TestEnv, error) {
 
 	identityStore := NewIdentityStore(users)
 	auth := NewAuthMiddleware(identityStore)
-	proxyHandler := NewProxyHandler(auth, masterCreds, securityConfig)
+
+	// Initialize streaming upload tracker
+	uploadTracker := NewStreamingUploadTracker(
+		securityConfig.MaxConcurrentStreamingUploads,
+		securityConfig.MaxStreamingUploadSize,
+		securityConfig.GetMaxStreamingUploadDuration(),
+	)
+
+	proxyHandler := NewProxyHandler(auth, masterCreds, securityConfig, uploadTracker)
 	proxyServer := httptest.NewServer(proxyHandler)
 
 	// 4. Create test environment
@@ -203,7 +218,15 @@ func NewTestProxyHandler(users []User, securityConfig SecurityConfig) *ProxyHand
 		Endpoint:  "https://backend.example.com",
 		Region:    "us-east-1",
 	}
-	return NewProxyHandler(auth, masterCreds, securityConfig)
+
+	// Initialize streaming upload tracker
+	uploadTracker := NewStreamingUploadTracker(
+		securityConfig.MaxConcurrentStreamingUploads,
+		securityConfig.MaxStreamingUploadSize,
+		securityConfig.GetMaxStreamingUploadDuration(),
+	)
+
+	return NewProxyHandler(auth, masterCreds, securityConfig, uploadTracker)
 }
 
 // CreateTestRequest creates a new HTTP request for testing

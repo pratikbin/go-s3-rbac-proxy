@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 )
@@ -29,7 +30,7 @@ func TestS3EncodePath_EdgeCases(t *testing.T) {
 	}
 }
 
-func TestGetCanonicalURI_Normalization(t *testing.T) {
+func TestGetCanonicalURI_Normalization_Extended(t *testing.T) {
 	tests := []struct {
 		name     string
 		urlPath  string
@@ -84,6 +85,101 @@ func TestGetCanonicalURI_Normalization(t *testing.T) {
 			got := getCanonicalURI(req)
 			if got != tt.expected {
 				t.Errorf("getCanonicalURI() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestExtractBucket_Extended(t *testing.T) {
+	tests := []struct {
+		name           string
+		host           string
+		path           string
+		expectedBucket string
+		description    string
+	}{
+		{
+			name:           "StandardPathStyle",
+			host:           "proxy.example.com",
+			path:           "/bucket/key",
+			expectedBucket: "bucket",
+			description:    "Standard path-style format",
+		},
+		{
+			name:           "VirtualHostStyle",
+			host:           "bucket.proxy.example.com",
+			path:           "/key",
+			expectedBucket: "bucket",
+			description:    "Virtual-host style - bucket extracted from Host",
+		},
+		{
+			name:           "RootPath",
+			host:           "proxy.example.com",
+			path:           "/",
+			expectedBucket: "",
+			description:    "Root path (ListBuckets)",
+		},
+		{
+			name:           "OnlyBucket",
+			host:           "proxy.example.com",
+			path:           "/bucket",
+			expectedBucket: "bucket",
+			description:    "Path with only bucket name",
+		},
+		{
+			name:           "VirtualHostWithPort",
+			host:           "bucket.proxy.example.com:8080",
+			path:           "/key",
+			expectedBucket: "bucket",
+			description:    "Virtual-host style with port",
+		},
+		{
+			name:           "LocalhostVirtualHost",
+			host:           "bucket.localhost",
+			path:           "/key",
+			expectedBucket: "bucket",
+			description:    "Localhost virtual-host style",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "http://"+tt.host+tt.path, nil)
+			req.Host = tt.host
+
+			bucket := extractBucket(req)
+			if bucket != tt.expectedBucket {
+				t.Errorf("extractBucket() with host=%q, path=%q = %q, want %q (%s)",
+					tt.host, tt.path, bucket, tt.expectedBucket, tt.description)
+			}
+		})
+	}
+}
+
+func TestExtractBucketFromPath_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name           string
+		path           string
+		expectedBucket string
+	}{
+		{"Standard", "/bucket/key", "bucket"},
+		{"DoubleSlashStart", "//bucket/key", ""},
+		{"TripleSlash", "///bucket/key", ""},
+		{"EmptyPath", "", ""},
+		{"RootPath", "/", ""},
+		{"OnlyBucket", "/bucket", "bucket"},
+		{"OnlyBucketTrailingSlash", "/bucket/", "bucket"},
+		{"PathTraversal", "/bucket/../other/key", "bucket"},
+		{"DotSegment", "/bucket/./key", "bucket"},
+		{"MultipleSlashes", "/bucket//key", "bucket"},
+		{"TrailingSlash", "/bucket/key/", "bucket"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bucket := extractBucketFromPath(tt.path)
+			if bucket != tt.expectedBucket {
+				t.Errorf("extractBucketFromPath(%q) = %q, want %q", tt.path, bucket, tt.expectedBucket)
 			}
 		})
 	}

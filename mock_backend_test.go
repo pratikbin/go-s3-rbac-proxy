@@ -134,7 +134,6 @@ func (m *mockS3Backend) handleCreateMultipartUpload(w http.ResponseWriter, r *ht
 	m.uploads.Store(uploadID, &sync.Map{})
 
 	// Extract key from path (remove bucket prefix)
-	// Improved key extraction to be more generic if needed, but keeping existing logic for now
 	key := strings.TrimPrefix(r.URL.Path, "/test-bucket/")
 
 	// Create XML response using proper marshaling

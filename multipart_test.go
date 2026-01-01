@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestMultipartUploadComplete verifies that CompleteMultipartUpload XML body
@@ -33,7 +34,8 @@ func TestMultipartUploadComplete_WithUnsignedPayload(t *testing.T) {
 	securityConfig := SecurityConfig{
 		VerifyContentIntegrity: false, // Use UNSIGNED-PAYLOAD (default)
 	}
-	proxy := NewProxyHandler(auth, masterCreds, securityConfig)
+	tracker := NewStreamingUploadTracker(5, 1024*1024, time.Hour)
+	proxy := NewProxyHandler(auth, masterCreds, securityConfig, tracker)
 
 	// XML body for CompleteMultipartUpload
 	xmlBody := `<?xml version="1.0" encoding="UTF-8"?>
@@ -118,7 +120,8 @@ func TestMultipartUploadComplete_WithContentHash(t *testing.T) {
 		VerifyContentIntegrity: true,            // Enable verification
 		MaxVerifyBodySize:      1 * 1024 * 1024, // 1MB (enough for XML)
 	}
-	proxy := NewProxyHandler(auth, masterCreds, securityConfig)
+	tracker := NewStreamingUploadTracker(5, 1024*1024, time.Hour)
+	proxy := NewProxyHandler(auth, masterCreds, securityConfig, tracker)
 
 	// XML body for CompleteMultipartUpload
 	xmlBody := `<?xml version="1.0" encoding="UTF-8"?>
@@ -183,7 +186,8 @@ func TestMultipartInitiate_EmptyBody(t *testing.T) {
 	securityConfig := SecurityConfig{
 		VerifyContentIntegrity: false,
 	}
-	proxy := NewProxyHandler(auth, masterCreds, securityConfig)
+	tracker := NewStreamingUploadTracker(5, 1024*1024, time.Hour)
+	proxy := NewProxyHandler(auth, masterCreds, securityConfig, tracker)
 
 	// POST with ?uploads query parameter initiates multipart upload (empty body)
 	req := httptest.NewRequest("POST", "/test-bucket/large-file.bin?uploads", nil)
@@ -226,7 +230,8 @@ func TestMultipartUploadPart_BinaryData(t *testing.T) {
 	securityConfig := SecurityConfig{
 		VerifyContentIntegrity: false, // Streaming mode for large parts
 	}
-	proxy := NewProxyHandler(auth, masterCreds, securityConfig)
+	tracker := NewStreamingUploadTracker(5, 1024*1024, time.Hour)
+	proxy := NewProxyHandler(auth, masterCreds, securityConfig, tracker)
 
 	// Binary data for a part (simulate 5MB part)
 	partData := bytes.Repeat([]byte("A"), 5*1024*1024) // 5MB

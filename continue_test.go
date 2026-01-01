@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func Test100Continue_EarlyRejection(t *testing.T) {
@@ -15,8 +16,9 @@ func Test100Continue_EarlyRejection(t *testing.T) {
 	// Config doesn't matter much for this test as we fail before proxying
 	masterCreds := MasterCredentials{Endpoint: "http://localhost:9000"}
 	secConfig := SecurityConfig{}
+	tracker := NewStreamingUploadTracker(5, 1024, time.Hour)
 
-	proxy := NewProxyHandler(auth, masterCreds, secConfig)
+	proxy := NewProxyHandler(auth, masterCreds, secConfig, tracker)
 	server := httptest.NewServer(proxy)
 	defer server.Close()
 

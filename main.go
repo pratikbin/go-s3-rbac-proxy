@@ -75,8 +75,17 @@ func main() {
 	// defer cancel()
 	// configReloader.WatchConfigFile(ctx, 30*time.Second)
 
+	// Initialize streaming upload tracker with security limits
+	uploadTracker := NewStreamingUploadTracker(
+		config.Security.MaxConcurrentStreamingUploads,
+		config.Security.MaxStreamingUploadSize,
+		config.Security.GetMaxStreamingUploadDuration(),
+	)
+	// Start background janitor to clean up stale uploads
+	uploadTracker.StartJanitor(1 * time.Minute)
+
 	// Create proxy handler
-	proxyHandler := NewProxyHandler(authMiddleware, config.MasterCredentials, config.Security)
+	proxyHandler := NewProxyHandler(authMiddleware, config.MasterCredentials, config.Security, uploadTracker)
 	defer proxyHandler.Stop()
 
 	// Create HTTP server

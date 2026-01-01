@@ -1,8 +1,7 @@
-//go:build localstack
-
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -438,5 +437,123 @@ func TestLocalStack_ErrorPassthrough(t *testing.T) {
 	} else {
 		// Could be a generic error, but at least an error is returned
 		t.Logf("✅ Access to forbidden bucket blocked (error: %v)", err)
+	}
+}
+
+// TestLocalStack_AccessDenied_CrossBucket verifies access control boundaries
+func TestLocalStack_AccessDenied_CrossBucket(t *testing.T) {
+	ctx := context.Background()
+	users := []User{
+		{
+			AccessKey:      "user-restricted",
+			SecretKey:      "secret-restricted",
+			AllowedBuckets: []string{"bucket-a"},
+		},
+	}
+
+	env, err := SetupLocalStackEnv(ctx, users)
+	if err != nil {
+		t.Fatalf("Failed to setup LocalStack env: %v", err)
+	}
+	defer env.Cleanup()
+
+	// Create both buckets in backend
+	for _, b := range []string{"bucket-a", "bucket-b"} {
+		if err := EnsureBucket(ctx, env.BackendURL, b); err != nil {
+			t.Fatalf("Failed to ensure bucket %q: %v", b, err)
+		}
+		defer CleanupBucket(ctx, env.BackendURL, b)
+	}
+
+	client, err := CreateProxyS3Client(ctx, env.ProxyURL, "user-restricted", "secret-restricted")
+	if err != nil {
+		t.Fatalf("Failed to create S3 client: %v", err)
+	}
+
+	// 1. PutObject in Forbidden Bucket
+	_, err = client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String("bucket-b"),
+		Key:    aws.String("forbidden-file.txt"),
+		Body:   strings.NewReader("test data"),
+	})
+	if err == nil {
+		t.Fatal("Expected error when accessing forbidden bucket, got nil")
+	}
+	t.Logf("✅ PutObject correctly denied: %v", err)
+
+	// 2. Allowed Bucket Success
+	_, err = client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String("bucket-a"),
+		Key:    aws.String("allowed-file.txt"),
+		Body:   strings.NewReader("allowed bucket data"),
+	})
+	if err != nil {
+		t.Fatalf("Expected success for authorized bucket, got error: %v", err)
+	}
+	t.Log("✅ Access to authorized bucket works correctly")
+}
+
+// TestLocalStack_DataIntegrity_Streaming verifies data integrity with larger objects.
+func TestLocalStack_DataIntegrity_Streaming(t *testing.T) {
+	ctx := context.Background()
+	users := []User{
+		{
+			AccessKey:      "user-streaming",
+			SecretKey:      "secret-streaming",
+			AllowedBuckets: []string{"test-bucket"},
+		},
+	}
+
+	env, err := SetupLocalStackEnv(ctx, users)
+	if err != nil {
+		t.Fatalf("Failed to setup LocalStack env: %v", err)
+	}
+	defer env.Cleanup()
+
+	if err := EnsureBucket(ctx, env.BackendURL, "test-bucket"); err != nil {
+		t.Fatalf("Failed to ensure bucket: %v", err)
+	}
+	defer CleanupBucket(ctx, env.BackendURL, "test-bucket")
+
+	client, err := CreateProxyS3Client(ctx, env.ProxyURL, "user-streaming", "secret-streaming")
+	if err != nil {
+		t.Fatalf("Failed to create S3 client: %v", err)
+	}
+
+	// Test with 5MB object
+	size := 5 * 1024 * 1024
+	originalData := make([]byte, size)
+	for i := range originalData {
+		originalData[i] = byte(i % 256)
+	}
+
+	key := "streaming-test.bin"
+	_, err = client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String(key),
+		Body:   bytes.NewReader(originalData),
+	})
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	getOut, err := client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		t.Fatalf("GetObject failed: %v", err)
+	}
+	defer getOut.Body.Close()
+
+	readData, err := io.ReadAll(getOut.Body)
+	if err != nil {
+		t.Fatalf("Failed to read body: %v", err)
+	}
+
+	if !bytes.Equal(readData, originalData) {
+		t.Error("Data mismatch after upload/download")
+	} else {
+		t.Log("✅ Data integrity verified for 5MB object")
 	}
 }
