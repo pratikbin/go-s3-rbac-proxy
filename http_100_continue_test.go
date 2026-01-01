@@ -19,19 +19,13 @@ func TestIntegration_HTTP100Continue_EarlyRejection(t *testing.T) {
 	t.Parallel()
 
 	// Setup
-	users := []User{
-		{
-			AccessKey:      "user-100continue",
-			SecretKey:      "secret-100continue",
-			AllowedBuckets: []string{"test-bucket"},
-		},
-	}
+	users := []User{TestUserWildcard}
 
 	proxyURL, _, backend, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := CreateS3Client(ctx, proxyURL, "user-100continue", "secret-100continue")
+	client, err := CreateS3Client(ctx, proxyURL, TestUserWildcard.AccessKey, TestUserWildcard.SecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}

@@ -85,8 +85,6 @@ func (cr *ConfigReloader) ReloadConfig() error {
 
 // signalHandler listens for SIGHUP signals and triggers reloads
 func (cr *ConfigReloader) signalHandler() {
-	defer cr.wg.Done()
-
 	// Set up signal handling for SIGHUP
 	signal.Notify(cr.reloadChan, syscall.SIGHUP)
 

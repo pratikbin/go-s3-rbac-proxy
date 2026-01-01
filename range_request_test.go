@@ -15,19 +15,13 @@ func TestIntegration_RangeRequest(t *testing.T) {
 	t.Parallel()
 
 	// Setup
-	users := []User{
-		{
-			AccessKey:      "user-range",
-			SecretKey:      "secret-range",
-			AllowedBuckets: []string{"test-bucket"},
-		},
-	}
+	users := []User{TestUserWildcard}
 
 	proxyURL, _, backend, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := CreateS3Client(ctx, proxyURL, "user-range", "secret-range")
+	client, err := CreateS3Client(ctx, proxyURL, TestUserWildcard.AccessKey, TestUserWildcard.SecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}

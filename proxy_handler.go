@@ -112,13 +112,7 @@ func (c *countingReadCloser) Read(p []byte) (int, error) {
 	if n > 0 {
 		c.bytes += int64(n)
 	}
-	if err != nil && err != io.EOF {
-		return n, fmt.Errorf("failed to read from counting reader: %w", err)
-	}
-	if err != nil {
-		return n, fmt.Errorf("counting reader reached end or error: %w", err)
-	}
-	return n, nil
+	return n, err //nolint:wrapcheck // io.EOF must not be wrapped
 }
 
 func (c *countingReadCloser) Close() error {

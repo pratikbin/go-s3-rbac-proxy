@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -21,75 +20,10 @@ import (
 // localstackTestRegion is the region used for LocalStack tests
 const localstackTestRegion = "us-east-1"
 
-// ensureBucket creates a bucket in the specific LocalStack instance with retry logic.
-func ensureBucket(ctx context.Context, endpoint, bucket string) error {
-	client, err := CreateBackendS3Client(ctx, endpoint)
-	if err != nil {
-		return fmt.Errorf("failed to create backend client: %w", err)
-	}
-
-	// Retry bucket creation to handle eventual consistency
-	var lastErr error
-	for i := 0; i < 3; i++ {
-		_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{
-			Bucket: aws.String(bucket),
-		})
-		if err == nil {
-			return nil
-		}
-
-		errStr := err.Error()
-		if strings.Contains(errStr, "BucketAlreadyExists") || strings.Contains(errStr, "BucketAlreadyOwnedByYou") {
-			return nil
-		}
-
-		lastErr = err
-		time.Sleep(time.Duration(i+1) * time.Second)
-	}
-
-	return fmt.Errorf("failed to create bucket %q after retries: %w", bucket, lastErr)
-}
-
-// cleanupBucket deletes all objects and the bucket itself.
-func cleanupBucket(ctx context.Context, endpoint, bucket string) error {
-	client, err := CreateBackendS3Client(ctx, endpoint)
-	if err != nil {
-		return fmt.Errorf("failed to create backend client: %w", err)
-	}
-
-	// List and delete all objects
-	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(bucket),
-	})
-
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
-		if err != nil {
-			// Bucket might be gone or empty
-			break
-		}
-		for _, obj := range page.Contents {
-			_, err := client.DeleteObject(ctx, &s3.DeleteObjectInput{
-				Bucket: aws.String(bucket),
-				Key:    obj.Key,
-			})
-			if err != nil {
-				return fmt.Errorf("failed to delete object %q: %w", aws.ToString(obj.Key), err)
-			}
-		}
-	}
-
-	// Delete bucket (ignore errors as bucket might already be deleted)
-	_, _ = client.DeleteBucket(ctx, &s3.DeleteBucketInput{
-		Bucket: aws.String(bucket),
-	})
-	return nil
-}
-
 // TestLocalStack_BasicCRUD verifies basic object operations through the proxy.
 func TestLocalStack_BasicCRUD(t *testing.T) {
 	ctx := context.Background()
-	users := []TestUser{
+	users := []User{
 		{
 			AccessKey:      "test-user",
 			SecretKey:      "test-secret",
@@ -105,10 +39,10 @@ func TestLocalStack_BasicCRUD(t *testing.T) {
 	defer env.Cleanup()
 
 	// Ensure bucket exists in backend
-	if err := ensureBucket(ctx, env.BackendURL, "test-bucket"); err != nil {
+	if err := EnsureBucket(ctx, env.BackendURL, "test-bucket"); err != nil {
 		t.Fatalf("Failed to ensure bucket: %v", err)
 	}
-	defer cleanupBucket(ctx, env.BackendURL, "test-bucket")
+	defer CleanupBucket(ctx, env.BackendURL, "test-bucket")
 
 	client, err := CreateProxyS3Client(ctx, env.ProxyURL, "test-user", "test-secret")
 	if err != nil {
@@ -178,7 +112,7 @@ func TestLocalStack_BasicCRUD(t *testing.T) {
 // TestLocalStack_MultipartUpload performs a complete multipart upload.
 func TestLocalStack_MultipartUpload(t *testing.T) {
 	ctx := context.Background()
-	users := []TestUser{
+	users := []User{
 		{
 			AccessKey:      "test-user",
 			SecretKey:      "test-secret",
@@ -193,10 +127,10 @@ func TestLocalStack_MultipartUpload(t *testing.T) {
 	defer env.Cleanup()
 
 	// Ensure bucket exists
-	if err := ensureBucket(ctx, env.BackendURL, "multipart-bucket"); err != nil {
+	if err := EnsureBucket(ctx, env.BackendURL, "multipart-bucket"); err != nil {
 		t.Fatalf("Failed to ensure bucket: %v", err)
 	}
-	defer cleanupBucket(ctx, env.BackendURL, "multipart-bucket")
+	defer CleanupBucket(ctx, env.BackendURL, "multipart-bucket")
 
 	client, err := CreateProxyS3Client(ctx, env.ProxyURL, "test-user", "test-secret")
 	if err != nil {
@@ -298,7 +232,7 @@ func TestLocalStack_MultipartUpload(t *testing.T) {
 func TestLocalStack_ListBuckets_RBAC(t *testing.T) {
 	ctx := context.Background()
 
-	users := []TestUser{
+	users := []User{
 		{
 			AccessKey:      "user-a",
 			SecretKey:      "secret-a",
@@ -315,10 +249,10 @@ func TestLocalStack_ListBuckets_RBAC(t *testing.T) {
 	// Create two buckets in backend
 	buckets := []string{"rbac-bucket-a", "rbac-bucket-b"}
 	for _, b := range buckets {
-		if err := ensureBucket(ctx, env.BackendURL, b); err != nil {
+		if err := EnsureBucket(ctx, env.BackendURL, b); err != nil {
 			t.Fatalf("Failed to ensure bucket %q: %v", b, err)
 		}
-		defer cleanupBucket(ctx, env.BackendURL, b)
+		defer CleanupBucket(ctx, env.BackendURL, b)
 	}
 
 	client, err := CreateProxyS3Client(ctx, env.ProxyURL, "user-a", "secret-a")
@@ -344,7 +278,7 @@ func TestLocalStack_ListBuckets_RBAC(t *testing.T) {
 // TestLocalStack_PresignedURL verifies presigned URL generation and usage.
 func TestLocalStack_PresignedURL(t *testing.T) {
 	ctx := context.Background()
-	users := []TestUser{
+	users := []User{
 		{
 			AccessKey:      "presign-user",
 			SecretKey:      "presign-secret",
@@ -358,10 +292,10 @@ func TestLocalStack_PresignedURL(t *testing.T) {
 	}
 	defer env.Cleanup()
 
-	if err := ensureBucket(ctx, env.BackendURL, "presign-bucket"); err != nil {
+	if err := EnsureBucket(ctx, env.BackendURL, "presign-bucket"); err != nil {
 		t.Fatalf("Failed to ensure bucket: %v", err)
 	}
-	defer cleanupBucket(ctx, env.BackendURL, "presign-bucket")
+	defer CleanupBucket(ctx, env.BackendURL, "presign-bucket")
 
 	client, err := CreateProxyS3Client(ctx, env.ProxyURL, "presign-user", "presign-secret")
 	if err != nil {
@@ -449,7 +383,7 @@ func TestLocalStack_PresignedURL(t *testing.T) {
 // TestLocalStack_ErrorPassthrough ensures backend errors (404, 403) are relayed.
 func TestLocalStack_ErrorPassthrough(t *testing.T) {
 	ctx := context.Background()
-	users := []TestUser{
+	users := []User{
 		{
 			AccessKey:      "error-user",
 			SecretKey:      "error-secret",
@@ -464,10 +398,10 @@ func TestLocalStack_ErrorPassthrough(t *testing.T) {
 	defer env.Cleanup()
 
 	// Create only one bucket
-	if err := ensureBucket(ctx, env.BackendURL, "existing-bucket"); err != nil {
+	if err := EnsureBucket(ctx, env.BackendURL, "existing-bucket"); err != nil {
 		t.Fatalf("Failed to ensure bucket: %v", err)
 	}
-	defer cleanupBucket(ctx, env.BackendURL, "existing-bucket")
+	defer CleanupBucket(ctx, env.BackendURL, "existing-bucket")
 
 	client, err := CreateProxyS3Client(ctx, env.ProxyURL, "error-user", "error-secret")
 	if err != nil {

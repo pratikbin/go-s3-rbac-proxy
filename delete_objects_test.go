@@ -13,19 +13,13 @@ import (
 func TestIntegration_DeleteObjects_Batch(t *testing.T) {
 	t.Parallel()
 
-	users := []User{
-		{
-			AccessKey:      "user-delete",
-			SecretKey:      "secret-delete",
-			AllowedBuckets: []string{"test-bucket"},
-		},
-	}
+	users := []User{TestUserWildcard}
 
 	proxyURL, _, backend, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := CreateS3Client(ctx, proxyURL, "user-delete", "secret-delete")
+	client, err := CreateS3Client(ctx, proxyURL, TestUserWildcard.AccessKey, TestUserWildcard.SecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}

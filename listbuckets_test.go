@@ -27,18 +27,7 @@ func TestListBucketsInterception(t *testing.T) {
 		},
 	}
 
-	store := NewIdentityStore(users)
-	auth := NewAuthMiddleware(store)
-	masterCreds := MasterCredentials{
-		AccessKey: "master-key",
-		SecretKey: "master-secret",
-		Endpoint:  "https://backend.example.com",
-		Region:    "us-east-1",
-	}
-	securityConfig := SecurityConfig{
-		VerifyContentIntegrity: false,
-	}
-	proxy := NewProxyHandler(auth, masterCreds, securityConfig)
+	proxy := NewTestProxyHandler(users, SecurityConfig{VerifyContentIntegrity: false})
 
 	tests := []struct {
 		name               string
@@ -145,18 +134,7 @@ func TestServiceLevelOperationsBlocked(t *testing.T) {
 		},
 	}
 
-	store := NewIdentityStore(users)
-	auth := NewAuthMiddleware(store)
-	masterCreds := MasterCredentials{
-		AccessKey: "master-key",
-		SecretKey: "master-secret",
-		Endpoint:  "https://backend.example.com",
-		Region:    "us-east-1",
-	}
-	securityConfig := SecurityConfig{
-		VerifyContentIntegrity: false,
-	}
-	proxy := NewProxyHandler(auth, masterCreds, securityConfig)
+	proxy := NewTestProxyHandler(users, SecurityConfig{VerifyContentIntegrity: false})
 
 	tests := []struct {
 		name         string

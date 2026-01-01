@@ -9,6 +9,7 @@ import (
 )
 
 func TestConfigReloader(t *testing.T) {
+	_ = InitLogger("debug", "console")
 	// Create a temporary config file
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
@@ -260,6 +261,7 @@ func TestIdentityStoreThreadSafety(t *testing.T) {
 }
 
 func TestConfigReloaderSignalHandling(t *testing.T) {
+	_ = InitLogger("debug", "console")
 	// Skip this test in CI environments or when signals can't be tested
 	if testing.Short() {
 		t.Skip("skipping signal test in short mode")

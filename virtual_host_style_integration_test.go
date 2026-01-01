@@ -17,19 +17,13 @@ func TestIntegration_VirtualHostStyle_Limitation(t *testing.T) {
 	t.Parallel()
 
 	// Setup
-	users := []User{
-		{
-			AccessKey:      "user-vhost",
-			SecretKey:      "secret-vhost",
-			AllowedBuckets: []string{"test-bucket"},
-		},
-	}
+	users := []User{TestUserWildcard}
 
 	proxyURL, _, _, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := CreateS3Client(ctx, proxyURL, "user-vhost", "secret-vhost")
+	client, err := CreateS3Client(ctx, proxyURL, TestUserWildcard.AccessKey, TestUserWildcard.SecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}

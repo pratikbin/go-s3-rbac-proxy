@@ -28,19 +28,13 @@ func TestIntegration_ListBuckets_RBAC(t *testing.T) {
 		t.Parallel()
 
 		// Setup: User restricted to bucket-a
-		users := []User{
-			{
-				AccessKey:      "user-bucket-a",
-				SecretKey:      "secret-a",
-				AllowedBuckets: []string{"bucket-a"},
-			},
-		}
+		users := []User{TestUserBucketA}
 
 		proxyURL, _, backend, cleanup := SetupMockEnv(users)
 		defer cleanup()
 
 		ctx := context.Background()
-		client, err := CreateS3Client(ctx, proxyURL, "user-bucket-a", "secret-a")
+		client, err := CreateS3Client(ctx, proxyURL, TestUserBucketA.AccessKey, TestUserBucketA.SecretKey)
 		if err != nil {
 			t.Fatalf("Failed to create S3 client: %v", err)
 		}

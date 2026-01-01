@@ -17,19 +17,13 @@ func TestIntegration_PathNormalization_EdgeCases(t *testing.T) {
 	t.Parallel()
 
 	// Setup
-	users := []User{
-		{
-			AccessKey:      "user-normalization",
-			SecretKey:      "secret-normalization",
-			AllowedBuckets: []string{"test-bucket"},
-		},
-	}
+	users := []User{TestUserWildcard}
 
 	proxyURL, _, backend, cleanup := SetupMockEnv(users)
 	defer cleanup()
 
 	ctx := context.Background()
-	client, err := CreateS3Client(ctx, proxyURL, "user-normalization", "secret-normalization")
+	client, err := CreateS3Client(ctx, proxyURL, TestUserWildcard.AccessKey, TestUserWildcard.SecretKey)
 	if err != nil {
 		t.Fatalf("Failed to create S3 client: %v", err)
 	}
