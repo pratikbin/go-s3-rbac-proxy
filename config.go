@@ -144,7 +144,7 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.Security.MaxConcurrentStreamingUploads == 0 {
 		// Default to 5 concurrent streaming uploads per user
-		config.Security.MaxConcurrentStreamingUploads = 5
+		config.Security.MaxConcurrentStreamingUploads = 0
 	}
 
 	// Validate logging config

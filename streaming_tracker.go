@@ -259,20 +259,28 @@ func (t *StreamingUploadTracker) cleanupUploadLocked(shard *uploadShard, id stri
 
 type streamingReader struct {
 	io.ReadCloser
-	id          string
-	tracker     UploadTracker
-	recorder    http.ResponseWriter
-	idleTimeout time.Duration
+	id              string
+	tracker         UploadTracker
+	recorder        http.ResponseWriter
+	idleTimeout     time.Duration
+	deadlineSupport bool
+	supportChecked  bool
 }
 
 func (r *streamingReader) Read(p []byte) (int, error) {
-	if r.idleTimeout > 0 {
+	if r.idleTimeout > 0 && (!r.supportChecked || r.deadlineSupport) {
 		// Set read deadline to catch idle connections
 		rc := http.NewResponseController(r.recorder)
 		if err := rc.SetReadDeadline(time.Now().Add(r.idleTimeout)); err != nil {
-			// Some writers might not support setting deadlines (e.g. in tests)
-			// We log it but continue as the janitor provides secondary protection
-			Logger.Debug("failed to set read deadline", zap.Error(err))
+			if !r.supportChecked {
+				r.deadlineSupport = false
+				r.supportChecked = true
+				// Log once as debug if not supported
+				Logger.Debug("read deadline not supported by writer", zap.Error(err))
+			}
+		} else if !r.supportChecked {
+			r.deadlineSupport = true
+			r.supportChecked = true
 		}
 	}
 

@@ -810,63 +810,9 @@ func extractBucketFromPath(path string) string {
 	return ""
 }
 
-// extractBucket extracts the bucket name from an HTTP request, supporting both
-// path-style (/bucket/key) and virtual-host style (bucket.proxy.com/key) addressing.
+// extractBucket extracts the bucket name from an HTTP request using path-style addressing (/bucket/key)
 func extractBucket(r *http.Request) string {
-	// Remove port from host for analysis
-	hostWithoutPort := r.Host
-	if idx := strings.LastIndex(hostWithoutPort, ":"); idx != -1 {
-		// Check if the part after colon is all digits (a port number)
-		portPart := hostWithoutPort[idx+1:]
-		isPort := true
-		for _, c := range portPart {
-			if c < '0' || c > '9' {
-				isPort = false
-				break
-			}
-		}
-		if isPort {
-			hostWithoutPort = hostWithoutPort[:idx]
-		}
-	}
-
-	// Check for virtual-host style: bucket.domain.com
-	// Virtual-host style means the host has at least one dot and the first part
-	// before the dot is the bucket name
-	if strings.Contains(hostWithoutPort, ".") {
-		// Split into first part and the rest
-		parts := strings.SplitN(hostWithoutPort, ".", 2)
-		bucketCandidate := parts[0]
-		rest := parts[1]
-
-		// Check if this looks like virtual-host style
-		// Rules:
-		// 1. bucketCandidate must not be empty
-		// 2. bucketCandidate must not be all digits (could be IP octet)
-		// 3. rest must contain at least one dot (domain.tld) or be localhost
-		if bucketCandidate != "" && !isAllDigits(bucketCandidate) {
-			// Check if rest looks like a domain (contains dot) or is localhost
-			if strings.Contains(rest, ".") || rest == "localhost" {
-				return bucketCandidate
-			}
-		}
-	}
-
-	// Fall back to path-style extraction
 	return extractBucketFromPath(r.URL.Path)
-}
-
-// isAllDigits checks if a string contains only digits
-func isAllDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 // writeS3Error writes an S3 XML error response

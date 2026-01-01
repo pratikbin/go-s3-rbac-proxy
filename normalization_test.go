@@ -106,13 +106,6 @@ func TestExtractBucket_Extended(t *testing.T) {
 			description:    "Standard path-style format",
 		},
 		{
-			name:           "VirtualHostStyle",
-			host:           "bucket.proxy.example.com",
-			path:           "/key",
-			expectedBucket: "bucket",
-			description:    "Virtual-host style - bucket extracted from Host",
-		},
-		{
 			name:           "RootPath",
 			host:           "proxy.example.com",
 			path:           "/",
@@ -125,20 +118,6 @@ func TestExtractBucket_Extended(t *testing.T) {
 			path:           "/bucket",
 			expectedBucket: "bucket",
 			description:    "Path with only bucket name",
-		},
-		{
-			name:           "VirtualHostWithPort",
-			host:           "bucket.proxy.example.com:8080",
-			path:           "/key",
-			expectedBucket: "bucket",
-			description:    "Virtual-host style with port",
-		},
-		{
-			name:           "LocalhostVirtualHost",
-			host:           "bucket.localhost",
-			path:           "/key",
-			expectedBucket: "bucket",
-			description:    "Localhost virtual-host style",
 		},
 	}
 
